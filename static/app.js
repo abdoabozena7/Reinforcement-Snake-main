@@ -35,9 +35,9 @@ function renderBoard(board) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const blockSize = board.blockSize;
-    ctx.fillStyle = "#ff5252";
+    ctx.fillStyle = "#00e676";
     ctx.shadowBlur = 10;
-    ctx.shadowColor = "#ff5252";
+    ctx.shadowColor = "#00e676";
     ctx.fillRect(
         board.food.x * blockSize,
         board.food.y * blockSize,
@@ -46,8 +46,18 @@ function renderBoard(board) {
     );
 
     ctx.shadowBlur = 0;
+    board.obstacles.forEach((item) => {
+        ctx.fillStyle = "#ff3b30";
+        ctx.fillRect(
+            item.x * blockSize,
+            item.y * blockSize,
+            blockSize - 2,
+            blockSize - 2
+        );
+    });
+
     board.snake.forEach((part, index) => {
-        ctx.fillStyle = index === 0 ? "#00e676" : "#00a451";
+        ctx.fillStyle = index === 0 ? "#ffffff" : "#d9d9d9";
         ctx.fillRect(
             part.x * blockSize,
             part.y * blockSize,
@@ -65,7 +75,8 @@ async function playDeathEffect(board) {
     const frames = 8;
     const totalDuration = 250;
     const isWall = board.lastDeath === "wall";
-    const color = isWall ? "#ff9800" : "#00e676";
+    const isObstacle = board.lastDeath === "obstacle";
+    const color = isWall ? "#ff9800" : isObstacle ? "#ff3b30" : "#ffffff";
 
     for (let i = 0; i < frames; i += 1) {
         const alpha = 1 - i / frames;
@@ -83,8 +94,24 @@ async function playDeathEffect(board) {
             const py = Math.max(0, Math.min(board.gridSize - 1, board.deathPoint.y)) * board.blockSize;
             ctx.fillStyle = `rgba(255, 152, 0, ${alpha * 0.6})`;
             ctx.fillRect(px - 4, py - 4, board.blockSize + 6, board.blockSize + 6);
+        } else if (isObstacle) {
+            ctx.strokeStyle = `rgba(255, 59, 48, ${alpha})`;
+            ctx.lineWidth = 4;
+            ctx.strokeRect(
+                board.deathPoint.x * board.blockSize - 2,
+                board.deathPoint.y * board.blockSize - 2,
+                board.blockSize + 2,
+                board.blockSize + 2
+            );
+            ctx.fillStyle = `rgba(255, 59, 48, ${alpha * 0.45})`;
+            ctx.fillRect(
+                board.deathPoint.x * board.blockSize - 4,
+                board.deathPoint.y * board.blockSize - 4,
+                board.blockSize + 8,
+                board.blockSize + 8
+            );
         } else {
-            ctx.fillStyle = `rgba(0, 230, 118, ${alpha * 0.5})`;
+            ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.45})`;
             board.snake.forEach((part) => {
                 ctx.fillRect(
                     part.x * board.blockSize - 3,
@@ -94,7 +121,7 @@ async function playDeathEffect(board) {
                 );
             });
 
-            ctx.strokeStyle = `rgba(0, 230, 118, ${alpha})`;
+            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
             ctx.lineWidth = 3;
             ctx.strokeRect(
                 board.deathPoint.x * board.blockSize - 2,

@@ -11,15 +11,23 @@ class Point:
 
 
 class SnakeEnvironment:
-    def __init__(self, grid_size: int = 20, block_size: int = 20, step_limit: int = 500) -> None:
+    def __init__(
+        self,
+        grid_size: int = 20,
+        block_size: int = 20,
+        step_limit: int = 500,
+        obstacle_count: int = 8,
+    ) -> None:
         self.grid_size = grid_size
         self.block_size = block_size
         self.step_limit = step_limit
+        self.obstacle_count = obstacle_count
         self.reset()
 
     def reset(self) -> list[float]:
         self.snake = [Point(10, 10), Point(10, 11), Point(10, 12)]
         self.direction = Point(0, -1)
+        self.obstacles = self._spawn_obstacles()
         self.food = self._spawn_food()
         self.score = 0
         self.steps = 0
@@ -27,14 +35,43 @@ class SnakeEnvironment:
         self.death_point: Point | None = None
         return self.get_state()
 
+    def _spawn_obstacles(self) -> list[Point]:
+        obstacles: list[Point] = []
+        forbidden = {
+            (part.x, part.y)
+            for part in self.snake
+        }
+        forbidden.update(
+            {
+                (x, y)
+                for x in range(7, 14)
+                for y in range(7, 14)
+            }
+        )
+
+        while len(obstacles) < self.obstacle_count:
+            obstacle = Point(
+                random.randrange(self.grid_size),
+                random.randrange(self.grid_size),
+            )
+            if (obstacle.x, obstacle.y) in forbidden:
+                continue
+            if any(item.x == obstacle.x and item.y == obstacle.y for item in obstacles):
+                continue
+            obstacles.append(obstacle)
+        return obstacles
+
     def _spawn_food(self) -> Point:
         while True:
             food = Point(
                 random.randrange(self.grid_size),
                 random.randrange(self.grid_size),
             )
-            if not any(part.x == food.x and part.y == food.y for part in self.snake):
-                return food
+            if any(part.x == food.x and part.y == food.y for part in self.snake):
+                continue
+            if any(obstacle.x == food.x and obstacle.y == food.y for obstacle in self.obstacles):
+                continue
+            return food
 
     def get_state(self) -> list[float]:
         head = self.snake[0]
@@ -52,7 +89,9 @@ class SnakeEnvironment:
     def _is_hazard(self, x: int, y: int) -> int:
         if x < 0 or x >= self.grid_size or y < 0 or y >= self.grid_size:
             return 1
-        return 1 if any(part.x == x and part.y == y for part in self.snake) else 0
+        if any(part.x == x and part.y == y for part in self.snake):
+            return 1
+        return 1 if any(obstacle.x == x and obstacle.y == y for obstacle in self.obstacles) else 0
 
     def step(self, action_index: int) -> dict[str, object]:
         directions = [
@@ -85,11 +124,21 @@ class SnakeEnvironment:
         hit_self = not hit_wall and any(
             part.x == new_head.x and part.y == new_head.y for part in self.snake
         )
+        hit_obstacle = not hit_wall and any(
+            obstacle.x == new_head.x and obstacle.y == new_head.y for obstacle in self.obstacles
+        )
 
-        if hit_wall or hit_self:
-            self.last_death = "wall" if hit_wall else "self"
+        if hit_wall or hit_self or hit_obstacle:
+            if hit_wall:
+                self.last_death = "wall"
+            elif hit_obstacle:
+                self.last_death = "obstacle"
+            else:
+                self.last_death = "self"
             self.death_point = new_head
-            reward = -10.0
+            reward = -15.0 if hit_obstacle else -10.0
+            if hit_obstacle and self.score > 0:
+                self.score //= 2
             done = True
         else:
             self.snake.insert(0, new_head)
@@ -117,6 +166,7 @@ class SnakeEnvironment:
             "gridSize": self.grid_size,
             "blockSize": self.block_size,
             "snake": [{"x": part.x, "y": part.y} for part in self.snake],
+            "obstacles": [{"x": item.x, "y": item.y} for item in self.obstacles],
             "food": {"x": self.food.x, "y": self.food.y},
             "direction": {"x": self.direction.x, "y": self.direction.y},
             "lastDeath": self.last_death,
