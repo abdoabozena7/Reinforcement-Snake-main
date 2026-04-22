@@ -2,48 +2,52 @@
 
 ## Overview
 
-This project is an implementation of a Deep Q-Network (DQN) agent that learns to play the classic Snake game through reinforcement learning. The agent interacts with a custom game environment, improves its behavior over time, and learns optimal actions based on rewards and penalties.
+This version separates the project into:
 
-The entire system runs in the browser using TensorFlow.js and includes real-time training visualization.
+- `FastAPI` back-end for the snake environment, replay buffer, and DQN training loop
+- Static `HTML/CSS/JavaScript` front-end for rendering the board, chart, and dashboard
 
-## How It Works
+The browser no longer owns the reinforcement logic. It only calls the API and redraws the state returned by Python.
 
-The agent observes the game state, which is represented by a set of numerical features describing the position of the snake, food, and nearby hazards. Based on this state, the neural network estimates the expected future reward for each possible action.
+## Project Structure
 
-The learning process is based on the Q-learning principle, where the model updates its predictions using the Bellman equation and improves through repeated gameplay experience.
+- `main.py`: FastAPI entrypoint
+- `backend/environment.py`: snake game environment
+- `backend/agent.py`: replay buffer and NumPy DQN agent
+- `backend/session.py`: training session state and persistence
+- `static/index.html`: front-end markup
+- `static/styles.css`: front-end styles
+- `static/app.js`: rendering and API polling
 
-## Key Components
+## Run
 
-Environment
-A grid-based Snake game where the agent controls movement, collects food, and avoids collisions.
+1. Create a virtual environment:
 
-Deep Q-Network
-A neural network that maps game states to action values and guides decision-making.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-Experience Replay
-Past experiences are stored and randomly sampled during training to stabilize learning.
+2. Install dependencies:
 
-Epsilon-Greedy Strategy
-The agent balances exploration and exploitation by gradually reducing random actions over time.
+```powershell
+pip install -r requirements.txt
+```
 
-## Features
+3. Start the server:
 
-Real-time training in the browser
-Live performance visualization
-Persistent model storage using browser memory
-Training progress tracking with score history
+```powershell
+uvicorn main:app --reload
+```
 
-## Training Process
+4. Open:
 
-The agent starts with completely random behavior and gradually improves through repeated episodes. Over time, it learns to maximize score by reaching food efficiently while avoiding collisions.
+```text
+http://127.0.0.1:8000
+```
 
-## Technologies Used
+## Notes
 
-TensorFlow.js
-JavaScript
-HTML Canvas
-Chart Visualization Library
-
-## Goal
-
-The goal of this project is to demonstrate how reinforcement learning can be applied to a simple environment and how an agent can learn complex behavior through trial and error without explicit programming of rules.
+- Model weights are saved to `storage/model_weights.npz`
+- Training metadata is saved to `storage/training_state.json`
+- The front-end polls `/api/tick` to advance one training frame at a time

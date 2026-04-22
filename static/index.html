@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI :Snake DQN Training</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <h1>Autonomous Snake Training (FastAPI + DQN)</h1>
+
+    <div class="container">
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+
+        <div class="dashboard">
+            <div class="stat-box"><span>Episode:</span> <span id="episodes" class="stat-val">0</span></div>
+            <div class="stat-box"><span>High Score:</span> <span id="highScore" class="stat-val">0</span></div>
+            <div class="stat-box"><span>Epsilon (Exploration):</span> <span id="epsilon" class="stat-val">1.00</span></div>
+            <div class="stat-box"><span>Current Score:</span> <span id="currentScore" class="stat-val">0</span></div>
+            <div class="stat-box"><span>Avg Score (last 20):</span> <span id="avgScore" class="stat-val">0</span></div>
+            <div class="stat-box"><span>Replay Buffer:</span> <span id="bufferSize" class="stat-val">0</span></div>
+            <div class="log" id="gameLog">Connecting to API...</div>
+            <button id="resetBtn" class="btn">Reset Weights &amp; Start Over</button>
+        </div>
+    </div>
+
+    <div class="network-wrapper">
+        <div class="network-header">
+            <div>
+                <h2>Live Neural Network</h2>
+                <p id="networkInfo">Weights and activations update while the agent is thinking.</p>
+            </div>
+            <div class="network-legend">
+                <span><i class="legend-dot positive"></i>Positive weight</span>
+                <span><i class="legend-dot negative"></i>Negative weight</span>
+                <span><i class="legend-dot active"></i>Active neuron</span>
+            </div>
+        </div>
+        <div class="network-stage">
+            <canvas id="networkCanvas"></canvas>
+        </div>
+    </div>
+
+    <div class="explanation">
+        <div class="explanation-header">
+            <h2 id="explanationTitle">How does the model learn? (Deep Q-Network)</h2>
+            <div class="lang-toggle">
+                <button data-lang="en" class="active">EN</button>
+                <button data-lang="ar">AR</button>
+            </div>
+        </div>
+
+        <div class="lang-content active" id="lang-en" dir="ltr">
+            <p><strong>Frontend:</strong> HTML, CSS, and JavaScript now only render the board, charts, and dashboard.</p>
+            <p><strong>Backend:</strong> A FastAPI service owns the snake environment, replay buffer, and DQN training loop.</p>
+            <p><strong>Flow:</strong> The browser calls the API every frame, receives the latest board state, and redraws the scene.</p>
+            <p><strong>Why this split?</strong> Training logic is now reusable from Python and no longer tied to one HTML file.</p>
+        </div>
+
+        <div class="lang-content" id="lang-ar" dir="rtl">
+            <p><strong>الواجهة:</strong> ملفات HTML وCSS وJavaScript بقت مسؤولة عن الرسم والعرض فقط.</p>
+            <p><strong>الباك إند:</strong> خدمة FastAPI بقت شايلة بيئة اللعبة والـ replay buffer ومنطق تدريب الـ DQN.</p>
+            <p><strong>طريقة العمل:</strong> المتصفح يرسل طلب كل فريم، ويرجع له آخر حالة للعبة ثم يعيد رسمها.</p>
+            <p><strong>فايدة الفصل:</strong> منطق التعلم بقى مستقل في بايثون وسهل تطويره أو استبداله لاحقا.</p>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

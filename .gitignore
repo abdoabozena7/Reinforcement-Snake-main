@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+storage/training_state.json
+storage/model_weights.npz
