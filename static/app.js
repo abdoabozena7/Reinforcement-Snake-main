@@ -2,8 +2,20 @@ const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const networkCanvas = document.getElementById("networkCanvas");
 const networkCtx = networkCanvas.getContext("2d");
-const networkInfo = document.getElementById("networkInfo");
+const gamePanel = document.getElementById("gamePanel");
+const currentScoreCard = document.getElementById("currentScoreCard");
+const avgScoreCard = document.getElementById("avgScoreCard");
 let lastState = null;
+
+function flashGreen(element) {
+    if (!element) {
+        return;
+    }
+
+    element.classList.remove("flash-green");
+    void element.offsetWidth;
+    element.classList.add("flash-green");
+}
 
 function resizeNetworkCanvas() {
     const ratio = window.devicePixelRatio || 1;
@@ -158,7 +170,7 @@ function drawNetwork(network) {
     );
 
     const layerTitles = ["Input", "Hidden A", "Hidden B", "Output"];
-    networkCtx.font = "12px Segoe UI";
+    networkCtx.font = "12px Trebuchet MS";
     networkCtx.textAlign = "center";
 
     layerTitles.forEach((title, index) => {
@@ -199,7 +211,7 @@ function drawNetwork(network) {
                 networkCtx.lineTo(targetPositions[targetIndex].x, targetPositions[targetIndex].y);
                 networkCtx.strokeStyle = weight >= 0
                     ? `rgba(0, 230, 118, ${opacity})`
-                    : `rgba(255, 152, 0, ${opacity})`;
+                    : `rgba(255, 176, 77, ${opacity})`;
                 networkCtx.lineWidth = 0.4 + magnitude * 1.2;
                 networkCtx.stroke();
             }
@@ -237,7 +249,7 @@ function drawNetwork(network) {
         });
     });
 
-    networkCtx.font = "11px Segoe UI";
+    networkCtx.font = "11px Trebuchet MS";
     networkCtx.textAlign = "right";
     networkCtx.fillStyle = "#9ca3af";
     network.inputLabels.forEach((label, index) => {
@@ -255,6 +267,7 @@ function drawNetwork(network) {
 }
 
 function updateUI(state) {
+    const previousState = lastState;
     lastState = state;
     document.getElementById("episodes").innerText = state.episode;
     document.getElementById("highScore").innerText = state.highScore;
@@ -262,10 +275,19 @@ function updateUI(state) {
     document.getElementById("currentScore").innerText = state.currentScore;
     document.getElementById("avgScore").innerText = Number(state.avgScore).toFixed(2);
     document.getElementById("bufferSize").innerText = state.bufferSize;
-    document.getElementById("gameLog").innerText = state.logMessage;
-    networkInfo.innerText = `Episode ${state.episode} | Buffer ${state.bufferSize} | Epsilon ${Number(state.epsilon).toFixed(3)}`;
     renderBoard(state.board);
     drawNetwork(state.network);
+
+    if (previousState) {
+        if (Number(state.currentScore) > Number(previousState.currentScore)) {
+            flashGreen(gamePanel);
+            flashGreen(currentScoreCard);
+        }
+
+        if (Number(state.avgScore) > Number(previousState.avgScore)) {
+            flashGreen(avgScoreCard);
+        }
+    }
 }
 
 async function requestJson(url, options = {}) {
@@ -305,26 +327,6 @@ document.getElementById("resetBtn").addEventListener("click", async () => {
     updateUI(state);
 });
 
-const langTitles = {
-    en: "How does the model learn? (Deep Q-Network)",
-    ar: "كيف يتعلم النموذج؟ (Deep Q-Network)"
-};
-
-function setLanguage(lang) {
-    document.querySelectorAll(".lang-content").forEach((element) => {
-        element.classList.toggle("active", element.id === `lang-${lang}`);
-    });
-    document.querySelectorAll(".lang-toggle button").forEach((button) => {
-        button.classList.toggle("active", button.dataset.lang === lang);
-    });
-    document.getElementById("explanationTitle").innerText = langTitles[lang];
-    localStorage.setItem("snake-explanation-lang", lang);
-}
-
-document.querySelectorAll(".lang-toggle button").forEach((button) => {
-    button.addEventListener("click", () => setLanguage(button.dataset.lang));
-});
-
 window.addEventListener("resize", () => {
     resizeNetworkCanvas();
     if (lastState) {
@@ -336,10 +338,9 @@ async function boot() {
     resizeNetworkCanvas();
     const state = await requestJson("/api/state");
     updateUI(state);
-    setLanguage(localStorage.getItem("snake-explanation-lang") || "en");
     loop();
 }
 
 boot().catch((error) => {
-    document.getElementById("gameLog").innerText = `Failed to connect to API: ${error.message}`;
+    console.error(error);
 });
