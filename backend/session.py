@@ -39,11 +39,13 @@ class TrainingSession:
         self.log_message = "Booting engine... initializing Python DQN service."
 
         loaded_model = self.agent.load() if load_saved else False
-        if load_saved:
+        if load_saved and loaded_model:
             self._load_state()
         self._start_new_episode()
         if loaded_model:
             self.log_message = f"Resumed training from episode {self.completed_episodes}."
+        elif load_saved:
+            self.log_message = "Starting fresh 3D training run. Saved 2D weights were not compatible."
 
     def _start_new_episode(self) -> None:
         self.current_episode = self.completed_episodes + 1
@@ -111,6 +113,14 @@ class TrainingSession:
             if "epsilon" in metadata:
                 self.agent.epsilon = float(metadata["epsilon"])
         return metadata
+
+    def _read_checkpoint_metadata(self, state_file: Path) -> dict[str, object]:
+        if not state_file.exists():
+            return {}
+        try:
+            return json.loads(state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
 
     def _chart_point(self) -> dict[str, float | int]:
         return {
@@ -208,17 +218,50 @@ class TrainingSession:
 
     def load_saved_or_best_checkpoint(self) -> dict[str, object]:
         with self.lock:
-            source = "manual" if MANUAL_MODEL_FILE.exists() else "best"
-            model_file = MANUAL_MODEL_FILE if source == "manual" else BEST_MODEL_FILE
-            state_file = MANUAL_STATE_FILE if source == "manual" else BEST_STATE_FILE
-            metadata = self._load_checkpoint(model_file, state_file)
+            candidates: list[tuple[int, int, str, Path, Path]] = []
+            for source, model_file, state_file, priority in (
+                ("manual", MANUAL_MODEL_FILE, MANUAL_STATE_FILE, 0),
+                ("best", BEST_MODEL_FILE, BEST_STATE_FILE, 1),
+            ):
+                if not model_file.exists():
+                    continue
+                metadata = self._read_checkpoint_metadata(state_file)
+                high_score = int(metadata.get("highScore", -1))
+                candidates.append((high_score, priority, source, model_file, state_file))
+
+            candidates.sort(reverse=True)
+
+            loaded_source = None
+            metadata: dict[str, object] | None = None
+            for _, _, source, model_file, state_file in candidates:
+                candidate_metadata = self._load_checkpoint(model_file, state_file)
+                if candidate_metadata is None:
+                    continue
+                candidate_high_score = int(candidate_metadata.get("highScore", -1))
+                if candidate_high_score <= 0:
+                    continue
+                metadata = candidate_metadata
+                if metadata is not None:
+                    loaded_source = source
+                    break
+
             if metadata is None:
-                self.log_message = "No saved or best weights available yet."
+                self.agent.load_starter_policy()
+                self.agent.epsilon = 0.18
+                self.buffer.clear()
+                self.pending_reset = False
+                self._start_new_episode()
+                self.log_message = "Loaded starter weights for faster early 3D training."
                 return self._snapshot(include_history=True)
 
-            label = str(metadata.get("label", source)).capitalize()
+            label = str(metadata.get("label", loaded_source or "loaded")).capitalize()
             checkpoint_episode = int(metadata.get("episode", self.current_episode))
             checkpoint_high_score = int(metadata.get("highScore", self.high_score))
+            self.completed_episodes = max(self.completed_episodes, checkpoint_episode)
+            self.high_score = max(self.high_score, checkpoint_high_score)
+            self.buffer.clear()
+            self.pending_reset = False
+            self._start_new_episode()
             self.agent.save()
             self._save_state()
             self.log_message = (

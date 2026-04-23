@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Snake Training Room</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -23,6 +26,36 @@
         <section class="top-grid">
             <section id="gamePanel" class="panel game-panel">
                 <div class="panel-body game-body">
+                    <div id="cameraControl" class="camera-control">
+                        <button
+                            id="cameraMenuToggle"
+                            class="camera-toggle"
+                            type="button"
+                            aria-label="Open camera views"
+                            aria-expanded="false"
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M1.5 12s3.8-6.5 10.5-6.5S22.5 12 22.5 12 18.7 18.5 12 18.5 1.5 12 1.5 12Z"/>
+                                <circle cx="12" cy="12" r="3.25"/>
+                            </svg>
+                        </button>
+                        <div id="cameraMenu" class="camera-menu" aria-hidden="true">
+                            <button type="button" class="camera-option is-active" data-camera-view="orbit">Orbit</button>
+                            <button type="button" class="camera-option" data-camera-view="chase">Chase</button>
+                            <button type="button" class="camera-option" data-camera-view="cine-chase">Cine Chase</button>
+                            <button type="button" class="camera-option" data-camera-view="static">Static</button>
+                            <button type="button" class="camera-option" data-camera-view="cinema">Cinema</button>
+                            <div class="camera-menu-divider">Playback</div>
+                            <button
+                                id="slowModeToggle"
+                                class="camera-utility slow-menu-option"
+                                type="button"
+                                aria-pressed="false"
+                            >
+                                Slow
+                            </button>
+                        </div>
+                    </div>
                     <canvas id="gameCanvas" width="400" height="400"></canvas>
                 </div>
             </section>
@@ -73,6 +106,6 @@
         </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/app.js"></script>
 </body>
 </html>

@@ -42,18 +42,22 @@ class DQNAgent:
         "Hazard Down",
         "Hazard Left",
         "Hazard Right",
+        "Hazard Front",
+        "Hazard Back",
         "Food Up",
         "Food Down",
         "Food Left",
         "Food Right",
+        "Food Front",
+        "Food Back",
     ]
-    output_labels = ["Up", "Down", "Left", "Right"]
+    output_labels = ["Up", "Down", "Left", "Right", "Front", "Back"]
 
     def __init__(
         self,
         model_path: Path,
-        state_size: int = 8,
-        action_size: int = 4,
+        state_size: int = 12,
+        action_size: int = 6,
         hidden_size: int = 32,
         learning_rate: float = 0.001,
         gamma: float = 0.95,
@@ -100,6 +104,18 @@ class DQNAgent:
         if not path.exists():
             return False
         data = np.load(path)
+        expected_shapes = {
+            "w1": (self.state_size, self.hidden_size),
+            "b1": (1, self.hidden_size),
+            "w2": (self.hidden_size, self.hidden_size),
+            "b2": (1, self.hidden_size),
+            "w3": (self.hidden_size, self.action_size),
+            "b3": (1, self.action_size),
+        }
+        for key, shape in expected_shapes.items():
+            if key not in data or data[key].shape != shape:
+                return False
+
         self.w1 = data["w1"]
         self.b1 = data["b1"]
         self.w2 = data["w2"]
@@ -107,6 +123,18 @@ class DQNAgent:
         self.w3 = data["w3"]
         self.b3 = data["b3"]
         if {"target_w1", "target_b1", "target_w2", "target_b2", "target_w3", "target_b3"} <= set(data.files):
+            target_shapes = {
+                "target_w1": (self.state_size, self.hidden_size),
+                "target_b1": (1, self.hidden_size),
+                "target_w2": (self.hidden_size, self.hidden_size),
+                "target_b2": (1, self.hidden_size),
+                "target_w3": (self.hidden_size, self.action_size),
+                "target_b3": (1, self.action_size),
+            }
+            if any(data[key].shape != shape for key, shape in target_shapes.items()):
+                self._sync_target_network()
+                self.train_steps = int(data["train_steps"]) if "train_steps" in data.files else 0
+                return True
             self.target_w1 = data["target_w1"]
             self.target_b1 = data["target_b1"]
             self.target_w2 = data["target_w2"]
@@ -145,6 +173,36 @@ class DQNAgent:
             self.model_path.unlink()
         self._init_weights()
         self.epsilon = 1.0
+
+    def load_starter_policy(self) -> None:
+        self.w1 = np.zeros((self.state_size, self.hidden_size), dtype=np.float32)
+        self.b1 = np.zeros((1, self.hidden_size), dtype=np.float32)
+        self.w2 = np.zeros((self.hidden_size, self.hidden_size), dtype=np.float32)
+        self.b2 = np.zeros((1, self.hidden_size), dtype=np.float32)
+        self.w3 = np.zeros((self.hidden_size, self.action_size), dtype=np.float32)
+        self.b3 = np.full((1, self.action_size), 0.15, dtype=np.float32)
+
+        for action_index in range(self.action_size):
+            food_input = 6 + action_index
+            safe_feature = 6 + action_index
+            hazard_feature = 12 + action_index
+
+            self.w1[food_input, action_index] = 1.0
+            self.w1[action_index, safe_feature] = -1.0
+            self.b1[0, safe_feature] = 1.0
+            self.w1[action_index, hazard_feature] = 1.0
+
+        active_features = self.action_size * 3
+        for feature_index in range(active_features):
+            self.w2[feature_index, feature_index] = 1.0
+
+        for action_index in range(self.action_size):
+            self.w3[action_index, action_index] = 2.6
+            self.w3[6 + action_index, action_index] = 1.35
+            self.w3[12 + action_index, action_index] = -4.8
+
+        self._sync_target_network()
+        self.train_steps = 0
 
     def _forward_with(
         self,
