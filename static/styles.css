@@ -44,6 +44,14 @@ body {
     min-height: 42px;
 }
 
+.action-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .title-row {
     display: flex;
     flex-direction: column;
@@ -269,6 +277,12 @@ h1 {
     transition: transform 0.18s ease, opacity 0.18s ease;
 }
 
+.btn-secondary {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
 .reset-floating {
     flex: 0 0 auto;
 }
@@ -323,6 +337,10 @@ h1 {
 
     .title-row {
         align-items: flex-start;
+    }
+
+    .action-row {
+        justify-content: flex-start;
     }
 }
 

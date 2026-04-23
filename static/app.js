@@ -330,6 +330,23 @@ async function requestJson(url, options = {}) {
     return response.json();
 }
 
+async function handleWeightsAction(url) {
+    const state = await requestJson(url, { method: "POST" });
+    updateUI(state);
+    return state;
+}
+
+function flashButtonLabel(button, label) {
+    const defaultLabel = button.dataset.defaultLabel || button.textContent;
+    button.dataset.defaultLabel = defaultLabel;
+    button.textContent = label;
+    button.disabled = true;
+    setTimeout(() => {
+        button.textContent = defaultLabel;
+        button.disabled = false;
+    }, 900);
+}
+
 let loopActive = true;
 
 async function loop() {
@@ -352,6 +369,18 @@ document.getElementById("resetBtn").addEventListener("click", async () => {
 
     const state = await requestJson("/api/reset", { method: "POST" });
     updateUI(state);
+});
+
+document.getElementById("saveWeightsBtn").addEventListener("click", async () => {
+    const button = document.getElementById("saveWeightsBtn");
+    await handleWeightsAction("/api/save-weights");
+    flashButtonLabel(button, "Saved");
+});
+
+document.getElementById("loadWeightsBtn").addEventListener("click", async () => {
+    const button = document.getElementById("loadWeightsBtn");
+    const state = await handleWeightsAction("/api/load-weights");
+    flashButtonLabel(button, state.logMessage.startsWith("Loaded") ? "Loaded" : "No Save");
 });
 
 window.addEventListener("resize", () => {

@@ -60,6 +60,7 @@ class DQNAgent:
         epsilon: float = 1.0,
         epsilon_min: float = 0.01,
         epsilon_decay: float = 0.995,
+        target_sync_interval: int = 200,
     ) -> None:
         self.model_path = model_path
         self.state_size = state_size
@@ -70,6 +71,8 @@ class DQNAgent:
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
+        self.target_sync_interval = target_sync_interval
+        self.train_steps = 0
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -79,29 +82,62 @@ class DQNAgent:
         self.b2 = np.zeros((1, self.hidden_size), dtype=np.float32)
         self.w3 = (np.random.randn(self.hidden_size, self.action_size) * 0.1).astype(np.float32)
         self.b3 = np.zeros((1, self.action_size), dtype=np.float32)
+        self._sync_target_network()
+        self.train_steps = 0
+
+    def _sync_target_network(self) -> None:
+        self.target_w1 = self.w1.copy()
+        self.target_b1 = self.b1.copy()
+        self.target_w2 = self.w2.copy()
+        self.target_b2 = self.b2.copy()
+        self.target_w3 = self.w3.copy()
+        self.target_b3 = self.b3.copy()
 
     def load(self) -> bool:
-        if not self.model_path.exists():
+        return self.load_from(self.model_path)
+
+    def load_from(self, path: Path) -> bool:
+        if not path.exists():
             return False
-        data = np.load(self.model_path)
+        data = np.load(path)
         self.w1 = data["w1"]
         self.b1 = data["b1"]
         self.w2 = data["w2"]
         self.b2 = data["b2"]
         self.w3 = data["w3"]
         self.b3 = data["b3"]
+        if {"target_w1", "target_b1", "target_w2", "target_b2", "target_w3", "target_b3"} <= set(data.files):
+            self.target_w1 = data["target_w1"]
+            self.target_b1 = data["target_b1"]
+            self.target_w2 = data["target_w2"]
+            self.target_b2 = data["target_b2"]
+            self.target_w3 = data["target_w3"]
+            self.target_b3 = data["target_b3"]
+        else:
+            self._sync_target_network()
+        self.train_steps = int(data["train_steps"]) if "train_steps" in data.files else 0
         return True
 
     def save(self) -> None:
-        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        self.save_to(self.model_path)
+
+    def save_to(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
-            self.model_path,
+            path,
             w1=self.w1,
             b1=self.b1,
             w2=self.w2,
             b2=self.b2,
             w3=self.w3,
             b3=self.b3,
+            target_w1=self.target_w1,
+            target_b1=self.target_b1,
+            target_w2=self.target_w2,
+            target_b2=self.target_b2,
+            target_w3=self.target_w3,
+            target_b3=self.target_b3,
+            train_steps=np.array(self.train_steps, dtype=np.int64),
         )
 
     def clear_memory(self) -> None:
@@ -110,16 +146,40 @@ class DQNAgent:
         self._init_weights()
         self.epsilon = 1.0
 
-    def _forward(self, states: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        z1 = states @ self.w1 + self.b1
+    def _forward_with(
+        self,
+        states: np.ndarray,
+        w1: np.ndarray,
+        b1: np.ndarray,
+        w2: np.ndarray,
+        b2: np.ndarray,
+        w3: np.ndarray,
+        b3: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        z1 = states @ w1 + b1
         a1 = np.maximum(z1, 0.0)
-        z2 = a1 @ self.w2 + self.b2
+        z2 = a1 @ w2 + b2
         a2 = np.maximum(z2, 0.0)
-        q_values = a2 @ self.w3 + self.b3
+        q_values = a2 @ w3 + b3
         return z1, a1, z2, a2, q_values
+
+    def _forward(self, states: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        return self._forward_with(states, self.w1, self.b1, self.w2, self.b2, self.w3, self.b3)
 
     def predict(self, states: np.ndarray) -> np.ndarray:
         _, _, _, _, q_values = self._forward(states.astype(np.float32))
+        return q_values
+
+    def predict_target(self, states: np.ndarray) -> np.ndarray:
+        _, _, _, _, q_values = self._forward_with(
+            states.astype(np.float32),
+            self.target_w1,
+            self.target_b1,
+            self.target_w2,
+            self.target_b2,
+            self.target_w3,
+            self.target_b3,
+        )
         return q_values
 
     def network_snapshot(self, state: list[float]) -> dict[str, object]:
@@ -153,11 +213,13 @@ class DQNAgent:
         next_states = np.array([item.next_state for item in batch], dtype=np.float32)
 
         current_q = self.predict(states)
-        next_q = self.predict(next_states)
+        next_online_q = self.predict(next_states)
+        next_target_q = self.predict_target(next_states)
         targets = current_q.copy()
+        best_actions = np.argmax(next_online_q, axis=1)
 
         for index, item in enumerate(batch):
-            best_future = 0.0 if item.done else float(np.max(next_q[index]))
+            best_future = 0.0 if item.done else float(next_target_q[index, best_actions[index]])
             targets[index, item.action] = item.reward + self.gamma * best_future
 
         z1, a1, z2, a2, predictions = self._forward(states)
@@ -183,6 +245,9 @@ class DQNAgent:
         self.b2 -= self.learning_rate * grad_b2.astype(np.float32)
         self.w1 -= self.learning_rate * grad_w1.astype(np.float32)
         self.b1 -= self.learning_rate * grad_b1.astype(np.float32)
+        self.train_steps += 1
+        if self.train_steps % self.target_sync_interval == 0:
+            self._sync_target_network()
 
     def decay_epsilon(self) -> None:
         if self.epsilon > self.epsilon_min:

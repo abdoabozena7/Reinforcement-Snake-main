@@ -34,3 +34,13 @@ def tick() -> dict[str, object]:
 @app.post("/api/reset")
 def reset_training() -> dict[str, object]:
     return training_session.reset_training()
+
+
+@app.post("/api/save-weights")
+def save_weights() -> dict[str, object]:
+    return training_session.save_manual_checkpoint()
+
+
+@app.post("/api/load-weights")
+def load_weights() -> dict[str, object]:
+    return training_session.load_saved_or_best_checkpoint()
