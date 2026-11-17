@@ -3,3 +3,16 @@ __pycache__/
 *.pyc
 storage/training_state.json
 storage/model_weights.npz
+/storage/best_model_state.json
+/storage/best_model_weights.npz
+/storage/manual_model_state.json
+/storage/manual_model_weights.npz
+/uvicorn.out.log
+/uvicorn.err.log
+storage/arena-v2/
+storage/arena-3d-v3/
+storage/*.tmp
+.runtime-proof/
+node_modules/
+.playwright/
+test-results/

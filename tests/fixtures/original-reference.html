@@ -1,0 +1,497 @@
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>3D Futuristic Tron Snake Battle</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+      body { margin: 0; overflow: hidden; background: #000; }
+      #scoreboard {
+		  position: absolute;
+		  top: 10px;
+		  left: 10px;
+		  color: #0ff;
+		  font-family: 'Orbitron', sans-serif;
+		  font-size: 18px;
+		  z-index: 1;
+		  background: rgba(0, 0, 0, 0.4);
+		  padding: 12px;
+		  border: 2px solid #0ff;
+		  border-radius: 8px;
+		}
+
+		.score-section {
+		  margin: 8px 0;
+		}
+
+		.score-section h3 {
+		  margin: 0 0 6px 0;
+		  font-size: 0.9em;
+		  color: #0ff;
+		}
+
+		.score-section p {
+		  margin: 0;
+		  padding: 4px;
+		  background: rgba(0, 0, 0, 0.2);
+		  border-radius: 4px;
+		}
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="scoreboard">
+	  <div class="score-section">
+		<h3>Current Length</h3>
+		<p>
+		  <span id="redLength" style="color: #870734">Red: 10</span> | 
+		  <span id="orangeLength" style="color: #ef473a">Orange: 10</span>
+		</p>
+	  </div>
+	  <div class="score-section">
+		<h3>Total Score</h3>
+		<p>
+		  <span id="redScore" style="color: #870734">Red: 0</span> | 
+		  <span id="orangeScore" style="color: #ef473a">Orange: 0</span>
+		</p>
+	  </div>
+	</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script type="module">
+      import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.172.0/three.module.js';
+
+      // ----- 3D GLOBAL SETTINGS -----
+      const gridSize = 32;
+      const cellSize = 1;
+      const initialSnakeLength = 10;
+      const moveInterval = 50;
+      let apple = null;
+
+      // ----- 3D SCENE SETUP -----
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x30122d);
+
+      const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 1, 144);
+      let angle = 0;
+      const radius = 50;
+      const cameraHeight = 30;
+
+      const renderer = new THREE.WebGLRenderer({
+        canvas: document.getElementById("gameCanvas"),
+        antialias: true,
+      });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+  // ----- SINGLE VERSION OF gridToWorld -----
+// Coordinate System Definition:
+// - X: Left/Right (horizontal)
+// - Y: Up/Down (vertical)
+// - Z: Forward/Back (depth)
+const GRID_SIZE = 32;
+const CELL_SIZE = 1;
+// Core Coordinate Conversion
+function gridToWorld(cell) {
+    return new THREE.Vector3(
+        cell.x - 16 + 0.5,  // Center at (16,16,16)
+        cell.y - 16 + 0.5,
+        cell.z - 16 + 0.5
+    );
+}
+
+// Precision Grid Creation
+function create3DGrid() {
+    const gridGroup = new THREE.Group();
+    const gridColor = 0x00ffff;
+    const gridSize = 32;
+    const cellSize = 1;
+
+    // Fixed grid line creation
+    const createAxisLines = (axis) => {
+        const lines = [];
+        for(let i = 0; i <= gridSize; i++) {
+            // Correct buffer size calculation
+            const positions = new Float32Array(24); // 8 points × 3 components
+            
+            switch(axis) {
+                case 'x': // YZ planes
+                    positions.set([
+                        i, 0, 0,    i, gridSize, 0,
+                        i, 0, 0,    i, 0, gridSize,
+                        i, gridSize, 0, i, gridSize, gridSize,
+                        i, 0, gridSize, i, gridSize, gridSize
+                    ]);
+                    break;
+                case 'y': // XZ planes
+                    positions.set([
+                        0, i, 0,    gridSize, i, 0,
+                        0, i, 0,    0, i, gridSize,
+                        gridSize, i, 0, gridSize, i, gridSize,
+                        0, i, gridSize, gridSize, i, gridSize
+                    ]);
+                    break;
+                case 'z': // XY planes
+                    positions.set([
+                        0, 0, i,    gridSize, 0, i,
+                        0, 0, i,    0, gridSize, i,
+                        gridSize, 0, i, gridSize, gridSize, i,
+                        0, gridSize, i, gridSize, gridSize, i
+                    ]);
+                    break;
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const line = new THREE.LineSegments(
+                geometry,
+                new THREE.LineBasicMaterial({
+                    color: gridColor,
+                    transparent: true,
+                    opacity: 0.1,
+                    depthWrite: false
+                })
+            );
+            lines.push(line);
+        }
+        return lines;
+    };
+
+    // Add grid lines and bounding box
+    gridGroup.add(...createAxisLines('x'));
+    gridGroup.add(...createAxisLines('y'));
+    gridGroup.add(...createAxisLines('z'));
+
+    // Bounding box (keep existing code)
+    // ... (same bounding box code as before)
+
+    // Position grid to match snake coordinates
+    gridGroup.position.set(
+        -gridSize/2 + 0.5,
+        -gridSize/2 + 0.5,
+        -gridSize/2 + 0.5
+    );
+    scene.add(gridGroup);
+}
+
+  // Initialize grid after scene setup
+  create3DGrid();
+
+
+      // ----- LIGHTS -----
+      const ambientLight = new THREE.AmbientLight(0x0fffff, 0.5);
+      scene.add(ambientLight);
+      const directionalLight = new THREE.DirectionalLight(0x0fffff, 1.2);
+      directionalLight.position.set(0, 100, 0);
+      scene.add(directionalLight);
+
+      // ----- 3D SNAKE CLASS -----
+      class Snake {
+        constructor(name, color, startPos, direction) {
+          this.name = name;
+          this.color = color;
+          this.segments = [];
+          this.direction = direction; // {dx, dy, dz}
+          this.score = 0;
+          this.meshes = [];
+          this.initSegments(startPos);
+        }
+        initSegments(startPos) {
+          this.segments = [];
+          let {x, y, z} = startPos;
+          for (let i = 0; i < initialSnakeLength; i++) {
+            this.segments.push({
+              x: x - i * this.direction.dx,
+              y: y - i * this.direction.dy,
+              z: z - i * this.direction.dz,
+            });
+          }
+        }
+      }
+
+      // Initialize snakes in 3D space
+      const snakes = [];
+      snakes.push(new Snake("Snake 1", 0x870734, {x:10, y:10, z:5}, {dx:1, dy:0, dz:0}));
+      snakes.push(new Snake("Snake 2", 0xef473a, {x:53, y:53, z:5}, {dx:-1, dy:0, dz:0}));
+
+      // ----- 3D UTILITIES -----
+
+      function updateSnakeMesh(snake) {
+        while (snake.meshes.length) scene.remove(snake.meshes.pop());
+        
+        const bodyGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+        const outlineGeo = new THREE.BoxGeometry(1.2, 1.2, 1.2);
+        const outlineMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+        const bodyMat = new THREE.MeshStandardMaterial({
+          color: snake.color,
+          emissive: snake.color,
+          emissiveIntensity: 1.5,
+          metalness: 0.2,
+          roughness: 0.1,
+        });
+
+        snake.segments.forEach(segment => {
+          const pos = gridToWorld(segment);
+          
+          const outline = new THREE.Mesh(outlineGeo, outlineMat);
+          outline.position.set(pos.x, pos.y, pos.z);
+          scene.add(outline);
+          snake.meshes.push(outline);
+          
+          const body = new THREE.Mesh(bodyGeo, bodyMat);
+          body.position.set(pos.x, pos.y, pos.z);
+          scene.add(body);
+          snake.meshes.push(body);
+        });
+      }
+
+      function isCellOccupied(x, y, z, ignoreSnake = null) {
+        return snakes.some(snake => {
+          if (snake === ignoreSnake) return false;
+          return snake.segments.some(seg => seg.x === x && seg.y === y && seg.z === z);
+        });
+      }
+
+  // ----- FIXED APPLE HANDLING -----
+  function removeApple() {
+    if (apple) {
+      scene.remove(apple.mesh);  // Remove from scene
+      apple.mesh.geometry.dispose();  // Clean up resources
+      apple.mesh.material.dispose();
+      apple = null;
+    }
+  }
+
+  function spawnApple() {
+    removeApple();  // Clear existing apple first
+    
+    let applePos;
+    let safe = false;
+    let attempts = 0;
+    
+    while (!safe && attempts++ < 100) {
+      applePos = {
+        x: Math.floor(Math.random() * gridSize),
+        y: Math.floor(Math.random() * gridSize),
+        z: Math.floor(Math.random() * gridSize),
+      };
+      safe = !isCellOccupied(applePos.x, applePos.y, applePos.z);
+    }
+    
+    const geometry = new THREE.SphereGeometry(0.4, 16, 16);
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x8099ff,
+      emissive: 0x8099ff,
+      emissiveIntensity: 1.0,
+      metalness: 0.8,
+      roughness: 0.1,
+    });
+    
+    const appleMesh = new THREE.Mesh(geometry, material);
+    const pos = gridToWorld(applePos);
+    appleMesh.position.set(pos.x, pos.y, pos.z);
+    scene.add(appleMesh);
+    apple = { pos: applePos, mesh: appleMesh };
+  }
+
+      // ----- 3D PATHFINDING -----
+      function findPath(start, target, obstacles) {
+        const queue = [];
+        const visited = new Set();
+        const parent = {};
+        const startKey = `${start.x},${start.y},${start.z}`;
+        
+        queue.push(start);
+        visited.add(startKey);
+        parent[startKey] = null;
+        
+        const directions = [
+          {dx:1, dy:0, dz:0}, {dx:-1, dy:0, dz:0},
+          {dx:0, dy:1, dz:0}, {dx:0, dy:-1, dz:0},
+          {dx:0, dy:0, dz:1}, {dx:0, dy:0, dz:-1}
+        ];
+
+        while (queue.length) {
+          const current = queue.shift();
+          if (current.x === target.x && current.y === target.y && current.z === target.z) {
+            const path = [];
+            let curKey = `${current.x},${current.y},${current.z}`;
+            while (curKey) {
+              const [x, y, z] = curKey.split(',').map(Number);
+              path.unshift({x, y, z});
+              curKey = parent[curKey];
+            }
+            return path;
+          }
+
+          directions.forEach(d => {
+            const next = {
+              x: current.x + d.dx,
+              y: current.y + d.dy,
+              z: current.z + d.dz
+            };
+            const nextKey = `${next.x},${next.y},${next.z}`;
+            
+            if (next.x >= 0 && next.x < gridSize &&
+                next.y >= 0 && next.y < gridSize &&
+                next.z >= 0 && next.z < gridSize &&
+                !visited.has(nextKey) &&
+                !obstacles.has(nextKey)) {
+              visited.add(nextKey);
+              parent[nextKey] = `${current.x},${current.y},${current.z}`;
+              queue.push(next);
+            }
+          });
+        }
+        return null;
+      }
+
+      // ----- 3D MOVEMENT -----
+      function getSafeDirection(snake) {
+        if (apple) {
+          const obstacles = new Set();
+          snakes.forEach(s => s.segments.forEach(seg => 
+            obstacles.add(`${seg.x},${seg.y},${seg.z}`)));
+          
+          const path = findPath(snake.segments[0], apple.pos, obstacles);
+          if (path && path.length >= 2) {
+            const next = path[1];
+            return {
+              dx: next.x - snake.segments[0].x,
+              dy: next.y - snake.segments[0].y,
+              dz: next.z - snake.segments[0].z
+            };
+          }
+        }
+
+        const directions = [
+          {dx:1, dy:0, dz:0}, {dx:-1, dy:0, dz:0},
+          {dx:0, dy:1, dz:0}, {dx:0, dy:-1, dz:0},
+          {dx:0, dy:0, dz:1}, {dx:0, dy:0, dz:-1}
+        ];
+        return directions.find(d => isSafeMove(snake, d)) || snake.direction;
+      }
+
+      function isSafeMove(snake, dir) {
+        const head = snake.segments[0];
+        const next = {
+          x: head.x + dir.dx,
+          y: head.y + dir.dy,
+          z: head.z + dir.dz
+        };
+        
+        if (next.x < 0 || next.x >= gridSize ||
+            next.y < 0 || next.y >= gridSize ||
+            next.z < 0 || next.z >= gridSize) return false;
+
+        return !snakes.some(s => s.segments.some(seg => 
+          seg.x === next.x && seg.y === next.y && seg.z === next.z));
+      }
+
+  // ----- FIXED MOVEMENT AND SCORING -----
+  function moveSnake(snake) {
+    snake.direction = getSafeDirection(snake);
+    const head = snake.segments[0];
+    const newHead = {
+      x: head.x + snake.direction.dx,
+      y: head.y + snake.direction.dy,
+      z: head.z + snake.direction.dz
+    };
+
+    // Collision check
+    if (newHead.x < 0 || newHead.x >= gridSize ||
+        newHead.y < 0 || newHead.y >= gridSize ||
+        newHead.z < 0 || newHead.z >= gridSize ||
+        snakes.some(s => s.segments.some(seg => 
+          seg.x === newHead.x && seg.y === newHead.y && seg.z === newHead.z))) {
+            respawnSnake(snake);
+            return;
+    }
+
+    // Check for apple before moving
+    let ateApple = false;
+    if (apple && newHead.x === apple.pos.x && 
+        newHead.y === apple.pos.y && newHead.z === apple.pos.z) {
+      snake.score++;
+      ateApple = true;
+      removeApple();
+    }
+
+    // Update snake segments
+    snake.segments.unshift(newHead);
+    if (!ateApple) {
+      snake.segments.pop();
+    }
+
+    updateScoreboard();
+  }
+
+      function respawnSnake(snake) {
+        let newPos;
+        let safe = false;
+        while (!safe) {
+          newPos = {
+            x: Math.floor(Math.random() * gridSize),
+            y: Math.floor(Math.random() * gridSize),
+            z: Math.floor(Math.random() * gridSize)
+          };
+          safe = !isCellOccupied(newPos.x, newPos.y, newPos.z);
+        }
+
+        const directions = [
+          {dx:1, dy:0, dz:0}, {dx:-1, dy:0, dz:0},
+          {dx:0, dy:1, dz:0}, {dx:0, dy:-1, dz:0},
+          {dx:0, dy:0, dz:1}, {dx:0, dy:0, dz:-1}
+        ];
+        snake.direction = directions[Math.floor(Math.random() * directions.length)];
+        snake.segments = [];
+        
+        for (let i = 0; i < initialSnakeLength; i++) {
+          snake.segments.push({
+            x: newPos.x - i * snake.direction.dx,
+            y: newPos.y - i * snake.direction.dy,
+            z: newPos.z - i * snake.direction.dz
+          });
+        }
+      }
+
+  // ----- ADD THIS AT THE TOP LEVEL -----
+	function updateScoreboard() {
+	  // Red Snake (first in array)
+	  document.getElementById("redLength").textContent = `Red: ${snakes[0].segments.length}`;
+	  document.getElementById("redScore").textContent = `Red: ${snakes[0].score}`;
+	  
+	  // Orange Snake (second in array)
+	  document.getElementById("orangeLength").textContent = `Orange: ${snakes[1].segments.length}`;
+	  document.getElementById("orangeScore").textContent = `Orange: ${snakes[1].score}`;
+	}
+
+  // ----- FIXED GAME LOOP SECTION -----
+  function updateCamera() {
+    angle += 0.002;
+    camera.position.x = Math.cos(angle) * radius;
+    camera.position.z = Math.sin(angle) * radius;
+    camera.position.y = cameraHeight;
+    camera.lookAt(0, 5, 0);
+  }
+
+  function updateGame() {
+    snakes.forEach(snake => moveSnake(snake));
+    if (!apple) spawnApple();
+    snakes.forEach(snake => updateSnakeMesh(snake));
+    updateScoreboard(); // Now this will work
+  }
+
+  // Restore interval-based updates
+  setInterval(updateGame, moveInterval);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    updateCamera();
+    renderer.render(scene, camera);
+  }
+
+  // Start the game
+  spawnApple();
+  animate();
+    </script>
+  </body>
+</html>

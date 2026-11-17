@@ -1,0 +1,22 @@
+{
+  "name": "verdant-survival-arena",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Development-only dependency pinning. The game serves vendored Three.js with Python.",
+  "scripts": {
+    "vendor": "node --input-type=commonjs -e \"const fs=require('node:fs'),path=require('node:path'); const out=path.join('static','vendor'); fs.mkdirSync(out,{recursive:true}); for(const file of ['three.module.js','three.core.js']) fs.copyFileSync(path.join('node_modules','three','build',file),path.join(out,file)); fs.copyFileSync(path.join('node_modules','three','LICENSE'),path.join(out,'LICENSE.three'));\"",
+    "check": "node --check static\\reference-view.js && node --check static\\reference-client.js && node --check static\\reference-world.js && node --check static\\reference-overlay.js && node --check static\\reference-cameras.js && node --check static\\network-view.js && node --check static\\app.js && node --check static\\presentation.js",
+    "test:camera": "node tests\\camera.mjs",
+    "test:presentation": "node tests\\presentation.mjs",
+    "test:reference": "node --test tests\\reference.mjs tests\\reference-cameras.mjs",
+    "test:browser": "node tests\\reference-browser.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1",
+    "three": "0.172.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

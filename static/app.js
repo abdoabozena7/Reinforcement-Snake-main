@@ -1,25 +1,70 @@
-import * as THREE from "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.172.0/three.module.js";
+import { Snake3DRenderer } from "./arena.js?v=readable-v6";
+import { ContactPresentation, PlaybackLifecycle, SimulationPacer, SIMULATION_RATES } from "./presentation.js?v=readable-v6";
+import { drawPolicyNetwork } from "./network-view.js";
 
-const canvas = document.getElementById("gameCanvas");
+const MODEL_VERSION = "arena-3d-v3";
+const ENVIRONMENT_VERSION = "survival-readable-v6";
 const networkCanvas = document.getElementById("networkCanvas");
 const networkCtx = networkCanvas.getContext("2d");
-const gamePanel = document.getElementById("gamePanel");
-const currentScoreCard = document.getElementById("currentScoreCard");
-const avgScoreCard = document.getElementById("avgScoreCard");
 const cameraControl = document.getElementById("cameraControl");
-const cameraMenuToggle = document.getElementById("cameraMenuToggle");
 const cameraMenu = document.getElementById("cameraMenu");
-const cameraOptions = Array.from(document.querySelectorAll(".camera-option"));
+const cameraMenuToggle = document.getElementById("cameraMenuToggle");
+const cameraOptions = [...document.querySelectorAll(".camera-option")];
 const slowModeToggle = document.getElementById("slowModeToggle");
+const status = document.getElementById("operationStatus");
+const serverControls = [...document.querySelectorAll(".action-row button, #pauseBtn, #newRunBtn, #difficultySelect, #modeSelect, #replayIntroBtn, #introToggle")];
+const pacer = new SimulationPacer();
+const lifecycle = new PlaybackLifecycle();
+const presentation = new ContactPresentation({ onFinish: (result) => { void finishTerminal(result); } });
 let lastState = null;
-let slowModeEnabled = false;
-let tickDelayMultiplier = 1;
+let game3D = null;
+let pendingControls = 0;
+let active = true;
+let offline = false;
+let notice = "";
+let speed = pacer.mode;
+let previousRegularSpeed = speed;
+let requestConcurrency = 0;
+let maxRequestConcurrency = 0;
+let cinematic = null;
+let introGeneration = 0;
+let introEnabled = false;
+let arenaExpanded = false;
+let terminalSummary = null;
+
+class SupersededOperation extends Error {}
+
+function ensureTerminalOverlay() {
+    let root = document.getElementById("terminalOverlay");
+    if (!root) {
+        root = document.createElement("section");
+        root.id = "terminalOverlay";
+        root.className = "terminal-overlay";
+        root.hidden = true;
+        root.setAttribute("role", "region");
+        root.setAttribute("aria-labelledby", "terminalTitle");
+        document.querySelector(".game-body").append(root);
+    }
+    let copy = root.querySelector("div");
+    if (!copy) { copy = document.createElement("div"); root.prepend(copy); }
+    for (const [id, tag] of [["terminalPhase", "span"], ["terminalTitle", "strong"], ["terminalDetail", "p"], ["contactStatus", "span"], ["skipRecapBtn", "button"]]) {
+        if (document.getElementById(id)) continue;
+        const element = document.createElement(tag);
+        element.id = id;
+        if (tag === "button") {
+            element.type = "button";
+            element.className = "btn btn-secondary";
+            element.textContent = "Skip recap";
+            root.append(element);
+        } else copy.append(element);
+    }
+    document.getElementById("terminalTitle").setAttribute("aria-live", "polite");
+    return root;
+}
+
+const terminalOverlay = ensureTerminalOverlay();
 
 function flashGreen(element) {
-    if (!element) {
-        return;
-    }
-
     element.classList.remove("flash-green");
     void element.offsetWidth;
     element.classList.add("flash-green");
@@ -29,783 +74,490 @@ function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function setStatus(message, error = false) {
+    status.textContent = message;
+    status.parentElement.classList.toggle("has-error", error);
+    status.setAttribute("role", error ? "alert" : "status");
+}
+
+function showError(error) {
+    if (error instanceof SupersededOperation) return;
+    offline = true;
+    pacer.suspend();
+    lifecycle.invalidate();
+    cancelPresentations("offline", true);
+    console.error(error);
+    setStatus(`${error.message} Reconnect to continue safely.`, true);
+    document.getElementById("retryBtn").hidden = false;
+}
+
+function syncControls() {
+    const disabled = pendingControls > 0 || !lastState || offline;
+    serverControls.forEach((control) => { control.disabled = disabled; });
+    document.getElementById("speedSelect").value = speed;
+    const suffix = cinematic ? " after intro" : presentation.active || lifecycle.terminal ? " after recap" : "";
+    document.getElementById("pauseBtn").textContent = `${lifecycle.desiredPaused ? "Resume" : "Pause"}${suffix}`;
+    document.getElementById("roleLegend").hidden = Boolean(cinematic || lastState?.introActive || presentation.active || lifecycle.terminal || terminalSummary);
+    if (lastState) {
+        document.getElementById("modeSelect").value = lastState.mode;
+        document.getElementById("difficultySelect").value = lastState.fullSurvival ? "full"
+            : lastState.autoCurriculum ? "curriculum" : String(lastState.level);
+    }
+}
+
 function resizeNetworkCanvas() {
-    const ratio = window.devicePixelRatio || 1;
-    const width = networkCanvas.clientWidth;
-    const height = networkCanvas.clientHeight;
-    networkCanvas.width = Math.floor(width * ratio);
-    networkCanvas.height = Math.floor(height * ratio);
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    networkCanvas.width = Math.floor(networkCanvas.clientWidth * ratio);
+    networkCanvas.height = Math.floor(networkCanvas.clientHeight * ratio);
     networkCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
-}
-
-function normalizeActivation(value, layerIndex, maxValue) {
-    if (layerIndex === 0) {
-        return Math.max(0, Math.min(1, Number(value)));
-    }
-
-    if (layerIndex === 3) {
-        if (maxValue === 0) {
-            return 0.5;
-        }
-        return Math.max(0, Math.min(1, (Number(value) / maxValue + 1) / 2));
-    }
-
-    if (maxValue === 0) {
-        return 0;
-    }
-
-    return Math.max(0, Math.min(1, Number(value) / maxValue));
-}
-
-function makeLayerPositions(layer, x, top, height) {
-    const count = layer.length;
-    if (count === 1) {
-        return [{ x, y: top + height / 2 }];
-    }
-
-    const gap = height / (count - 1);
-    return layer.map((_, index) => ({
-        x,
-        y: top + gap * index
-    }));
+    if (lastState) drawNetwork(lastState.network);
 }
 
 function drawNetwork(network) {
-    if (!network) {
-        return;
-    }
-
-    const width = networkCanvas.clientWidth;
-    const height = networkCanvas.clientHeight;
-    networkCtx.clearRect(0, 0, width, height);
-
-    const paddingX = 72;
-    const paddingTop = 42;
-    const paddingBottom = 34;
-    const usableWidth = width - paddingX * 2;
-    const usableHeight = height - paddingTop - paddingBottom;
-    const layerGap = usableWidth / (network.layers.length - 1);
-    const time = performance.now() / 700;
-
-    const maxPerLayer = network.layers.map((layer, layerIndex) => {
-        if (layerIndex === 3) {
-            return Math.max(0.001, ...layer.map((value) => Math.abs(value)));
-        }
-        return Math.max(0.001, ...layer.map((value) => Number(value)));
-    });
-
-    const positions = network.layers.map((layer, index) =>
-        makeLayerPositions(layer, paddingX + layerGap * index, paddingTop, usableHeight)
-    );
-
-    const layerTitles = ["Input", "Hidden A", "Hidden B", "Output"];
-    networkCtx.font = "12px Trebuchet MS";
-    networkCtx.textAlign = "center";
-
-    layerTitles.forEach((title, index) => {
-        const x = paddingX + layerGap * index;
-        networkCtx.fillStyle = "#9ca3af";
-        networkCtx.fillText(title, x, 20);
-    });
-
-    network.weights.forEach((matrix, matrixIndex) => {
-        const fromLayer = network.layers[matrixIndex];
-        const toLayer = network.layers[matrixIndex + 1];
-        const sourcePositions = positions[matrixIndex];
-        const targetPositions = positions[matrixIndex + 1];
-
-        for (let sourceIndex = 0; sourceIndex < fromLayer.length; sourceIndex += 1) {
-            for (let targetIndex = 0; targetIndex < toLayer.length; targetIndex += 1) {
-                const weight = Number(matrix[sourceIndex][targetIndex]);
-                const magnitude = Math.min(1, Math.abs(weight) / 0.6);
-                if (magnitude < 0.03) {
-                    continue;
-                }
-
-                const fromActivation = normalizeActivation(
-                    fromLayer[sourceIndex],
-                    matrixIndex,
-                    maxPerLayer[matrixIndex]
-                );
-                const toActivation = normalizeActivation(
-                    toLayer[targetIndex],
-                    matrixIndex + 1,
-                    maxPerLayer[matrixIndex + 1]
-                );
-                const pulse = 0.65 + Math.sin(time + sourceIndex * 0.15 + targetIndex * 0.1) * 0.08;
-                const opacity = Math.max(0.03, magnitude * (0.18 + (fromActivation + toActivation) * 0.35) * pulse);
-
-                networkCtx.beginPath();
-                networkCtx.moveTo(sourcePositions[sourceIndex].x, sourcePositions[sourceIndex].y);
-                networkCtx.lineTo(targetPositions[targetIndex].x, targetPositions[targetIndex].y);
-                networkCtx.strokeStyle = weight >= 0
-                    ? `rgba(0, 230, 118, ${opacity})`
-                    : `rgba(255, 176, 77, ${opacity})`;
-                networkCtx.lineWidth = 0.4 + magnitude * 1.2;
-                networkCtx.stroke();
-            }
-        }
-    });
-
-    network.layers.forEach((layer, layerIndex) => {
-        const layerPositions = positions[layerIndex];
-        const maxValue = maxPerLayer[layerIndex];
-
-        layer.forEach((value, neuronIndex) => {
-            const activation = normalizeActivation(value, layerIndex, maxValue);
-            const pulse = 0.92 + Math.sin(time * 1.8 + layerIndex + neuronIndex * 0.25) * 0.08;
-            const radius = layerIndex === 0 || layerIndex === 3
-                ? 7 + activation * 4
-                : 3.2 + activation * 3.8;
-            const glow = 8 + activation * 24;
-            const position = layerPositions[neuronIndex];
-            const fill = layerIndex === 3
-                ? (Number(value) >= 0 ? "#6cecff" : "#ffb04d")
-                : "#6cecff";
-
-            networkCtx.beginPath();
-            networkCtx.arc(position.x, position.y, radius * pulse, 0, Math.PI * 2);
-            networkCtx.fillStyle = `rgba(108, 236, 255, ${0.16 + activation * 0.2})`;
-            networkCtx.shadowBlur = glow;
-            networkCtx.shadowColor = fill;
-            networkCtx.fill();
-
-            networkCtx.beginPath();
-            networkCtx.arc(position.x, position.y, Math.max(2.2, radius - 1.2), 0, Math.PI * 2);
-            networkCtx.fillStyle = fill;
-            networkCtx.fill();
-            networkCtx.shadowBlur = 0;
-        });
-    });
-
-    networkCtx.font = "11px Trebuchet MS";
-    networkCtx.textAlign = "right";
-    networkCtx.fillStyle = "#9ca3af";
-    network.inputLabels.forEach((label, index) => {
-        const position = positions[0][index];
-        networkCtx.fillText(label, position.x - 14, position.y + 4);
-    });
-
-    networkCtx.textAlign = "left";
-    network.outputLabels.forEach((label, index) => {
-        const outputValue = Number(network.layers[3][index]).toFixed(2);
-        const position = positions[3][index];
-        networkCtx.fillStyle = "#d8d8d8";
-        networkCtx.fillText(`${label} ${outputValue}`, position.x + 14, position.y + 4);
-    });
+    drawPolicyNetwork(networkCanvas, network);
 }
 
-class Snake3DRenderer {
-    constructor({ canvasElement }) {
-        this.canvas = canvasElement;
-        this.gridSize = 32;
-        this.cellSize = 1;
-        this.angle = 0;
-        this.radius = this.gridSize * 1.9;
-        this.cameraHeight = this.gridSize * 1.25;
-        this.center = new THREE.Vector3(0, 0, 0);
-        this.segmentMeshes = [];
-        this.obstacleMeshes = [];
-        this.foodMesh = null;
-        this.deathPulse = 0;
-        this.lastBoard = null;
-        this.cameraMode = "orbit";
-        this.cameraTargetPosition = new THREE.Vector3(0, this.cameraHeight, this.radius);
-        this.cameraTargetLookAt = new THREE.Vector3();
-        this.cameraLookAt = new THREE.Vector3();
-        this.cameraUpTarget = new THREE.Vector3(0, 1, 0);
-        this.cameraFovTarget = 60;
-        this.cinemaBlend = 0;
-
-        this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x000000);
-        this.camera = new THREE.PerspectiveCamera(60, 1, 1, 144);
-        this.renderer = new THREE.WebGLRenderer({
-            canvas: this.canvas,
-            antialias: true,
-            preserveDrawingBuffer: true
-        });
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        this.camera.position.copy(this.cameraTargetPosition);
-        this.camera.fov = this.cameraFovTarget;
-        this.camera.updateProjectionMatrix();
-        this.camera.lookAt(this.cameraLookAt);
-
-        this.boardGroup = new THREE.Group();
-        this.boardGroup.position.set(-this.gridSize / 2, -this.gridSize / 2, -this.gridSize / 2);
-        this.scene.add(this.boardGroup);
-
-        this.segmentGeometry = new THREE.BoxGeometry(0.9, 0.9, 0.9);
-        this.segmentOutlineGeometry = new THREE.BoxGeometry(1.16, 1.16, 1.16);
-        this.segmentMaterial = new THREE.MeshStandardMaterial({
-            color: 0xef473a,
-            emissive: 0xef473a,
-            emissiveIntensity: 1.4,
-            metalness: 0.22,
-            roughness: 0.12
-        });
-        this.headMaterial = new THREE.MeshStandardMaterial({
-            color: 0x870734,
-            emissive: 0x870734,
-            emissiveIntensity: 1.2,
-            metalness: 0.14,
-            roughness: 0.18
-        });
-        this.outlineMaterial = new THREE.MeshBasicMaterial({
-            color: 0x000000,
-            side: THREE.BackSide
-        });
-        this.obstacleGeometry = new THREE.BoxGeometry(0.92, 0.92, 0.92);
-        this.obstacleMaterial = new THREE.MeshStandardMaterial({
-            color: 0x2be7ff,
-            emissive: 0x2be7ff,
-            emissiveIntensity: 0.5,
-            metalness: 0.35,
-            roughness: 0.18
-        });
-        this.foodGeometry = new THREE.SphereGeometry(0.34, 20, 20);
-        this.foodMaterial = new THREE.MeshStandardMaterial({
-            color: 0x32ff72,
-            emissive: 0x24ff66,
-            emissiveIntensity: 2.2,
-            metalness: 0.35,
-            roughness: 0.08
-        });
-
-        this.handleResize = this.handleResize.bind(this);
-        this.animate = this.animate.bind(this);
-
-        this.setupScene();
-    }
-
-    setupScene() {
-        this.create3DGrid();
-
-        const ambientLight = new THREE.AmbientLight(0x0fffff, 0.5);
-        this.scene.add(ambientLight);
-
-        const directionalLight = new THREE.DirectionalLight(0x0fffff, 1.2);
-        directionalLight.position.set(0, 100, 0);
-        this.scene.add(directionalLight);
-
-        const fillLight = new THREE.DirectionalLight(0xff65d4, 0.55);
-        fillLight.position.set(-20, 15, -12);
-        this.scene.add(fillLight);
-    }
-
-    create3DGrid() {
-        const gridColor = 0x00ffff;
-        const createAxisLines = (axis) => {
-            const lines = [];
-            for (let i = 0; i <= this.gridSize; i += 1) {
-                const positions = new Float32Array(24);
-
-                if (axis === "x") {
-                    positions.set([
-                        i, 0, 0, i, this.gridSize, 0,
-                        i, 0, 0, i, 0, this.gridSize,
-                        i, this.gridSize, 0, i, this.gridSize, this.gridSize,
-                        i, 0, this.gridSize, i, this.gridSize, this.gridSize
-                    ]);
-                } else if (axis === "y") {
-                    positions.set([
-                        0, i, 0, this.gridSize, i, 0,
-                        0, i, 0, 0, i, this.gridSize,
-                        this.gridSize, i, 0, this.gridSize, i, this.gridSize,
-                        0, i, this.gridSize, this.gridSize, i, this.gridSize
-                    ]);
-                } else {
-                    positions.set([
-                        0, 0, i, this.gridSize, 0, i,
-                        0, 0, i, 0, this.gridSize, i,
-                        this.gridSize, 0, i, this.gridSize, this.gridSize, i,
-                        0, this.gridSize, i, this.gridSize, this.gridSize, i
-                    ]);
-                }
-
-                const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-                const line = new THREE.LineSegments(
-                    geometry,
-                    new THREE.LineBasicMaterial({
-                        color: gridColor,
-                        transparent: true,
-                        opacity: 0.1,
-                        depthWrite: false
-                    })
-                );
-                lines.push(line);
-            }
-            return lines;
-        };
-
-        this.boardGroup.add(...createAxisLines("x"));
-        this.boardGroup.add(...createAxisLines("y"));
-        this.boardGroup.add(...createAxisLines("z"));
-
-        const box = new THREE.LineSegments(
-            new THREE.EdgesGeometry(new THREE.BoxGeometry(this.gridSize, this.gridSize, this.gridSize)),
-            new THREE.LineBasicMaterial({
-                color: gridColor,
-                transparent: true,
-                opacity: 0.28
-            })
-        );
-        box.position.set(this.gridSize / 2, this.gridSize / 2, this.gridSize / 2);
-        this.boardGroup.add(box);
-
-        const coreGlow = new THREE.Mesh(
-            new THREE.BoxGeometry(this.gridSize * 0.88, this.gridSize * 0.88, this.gridSize * 0.88),
-            new THREE.MeshBasicMaterial({
-                color: 0x4f173e,
-                transparent: true,
-                opacity: 0.06,
-                wireframe: true
-            })
-        );
-        coreGlow.position.set(this.gridSize / 2, this.gridSize / 2, this.gridSize / 2);
-        this.boardGroup.add(coreGlow);
-    }
-
-    handleResize() {
-        const width = Math.max(1, this.canvas.clientWidth);
-        const height = Math.max(1, this.canvas.clientHeight);
-        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-
-        if (
-            this.canvas.width !== Math.floor(width * pixelRatio)
-            || this.canvas.height !== Math.floor(height * pixelRatio)
-        ) {
-            this.renderer.setPixelRatio(pixelRatio);
-            this.renderer.setSize(width, height, false);
-            this.camera.aspect = width / height;
-            this.camera.updateProjectionMatrix();
-        }
-    }
-
-    boardToWorld(cell) {
-        return new THREE.Vector3(cell.x + 0.5, cell.y + 0.5, cell.z + 0.5);
-    }
-
-    boardToScene(cell) {
-        const world = this.boardToWorld(cell);
-        return world.add(this.boardGroup.position);
-    }
-
-    createOutlinedMesh(geometry, material) {
-        const outline = new THREE.Mesh(geometry === this.segmentGeometry ? this.segmentOutlineGeometry : geometry, this.outlineMaterial);
-        const body = new THREE.Mesh(geometry, material);
-        const group = new THREE.Group();
-        if (geometry === this.segmentGeometry) {
-            group.add(outline);
-        }
-        group.add(body);
-        group.userData = { body };
-        return group;
-    }
-
-    syncSnake(board) {
-        const snake = board?.snake || [];
-
-        while (this.segmentMeshes.length < snake.length) {
-            const segmentGroup = this.createOutlinedMesh(this.segmentGeometry, this.segmentMaterial.clone());
-            this.boardGroup.add(segmentGroup);
-            this.segmentMeshes.push(segmentGroup);
-        }
-
-        while (this.segmentMeshes.length > snake.length) {
-            const segmentGroup = this.segmentMeshes.pop();
-            this.boardGroup.remove(segmentGroup);
-        }
-
-        snake.forEach((segment, index) => {
-            const group = this.segmentMeshes[index];
-            const position = this.boardToWorld(segment);
-            group.position.copy(position);
-            const body = group.userData.body;
-            if (index === 0) {
-                body.material.color.copy(this.headMaterial.color);
-                body.material.emissive.copy(this.headMaterial.emissive);
-                body.material.emissiveIntensity = this.headMaterial.emissiveIntensity;
-            } else {
-                body.material.color.copy(this.segmentMaterial.color);
-                body.material.emissive.copy(this.segmentMaterial.emissive);
-                body.material.emissiveIntensity = this.segmentMaterial.emissiveIntensity;
-            }
-        });
-    }
-
-    syncObstacles(board) {
-        const obstacles = board?.obstacles || [];
-
-        while (this.obstacleMeshes.length < obstacles.length) {
-            const mesh = new THREE.Mesh(this.obstacleGeometry, this.obstacleMaterial.clone());
-            this.boardGroup.add(mesh);
-            this.obstacleMeshes.push(mesh);
-        }
-
-        while (this.obstacleMeshes.length > obstacles.length) {
-            const mesh = this.obstacleMeshes.pop();
-            this.boardGroup.remove(mesh);
-        }
-
-        obstacles.forEach((obstacle, index) => {
-            const mesh = this.obstacleMeshes[index];
-            const position = this.boardToWorld(obstacle);
-            mesh.position.copy(position);
-        });
-    }
-
-    syncFood(board) {
-        if (!board?.food) {
-            return;
-        }
-
-        if (!this.foodMesh) {
-            this.foodMesh = new THREE.Mesh(this.foodGeometry, this.foodMaterial.clone());
-            this.boardGroup.add(this.foodMesh);
-        }
-
-        const position = this.boardToWorld(board.food);
-        this.foodMesh.position.copy(position);
-    }
-
-    applyBoard(board) {
-        if (!board) {
-            return;
-        }
-
-        if (typeof board.gridSize === "number" && board.gridSize !== this.gridSize) {
-            this.gridSize = board.gridSize;
-            this.radius = this.gridSize * 1.9;
-            this.cameraHeight = this.gridSize * 1.25;
-        }
-
-        this.lastBoard = board;
-        this.syncSnake(board);
-        this.syncObstacles(board);
-        this.syncFood(board);
-
-        if (board.lastDeath) {
-            this.deathPulse = 1;
-        }
-    }
-
-    updateCamera() {
-        const distance = this.gridSize * 1.72;
-        const board = this.lastBoard;
-        const head = board?.snake?.[0] ? this.boardToScene(board.snake[0]) : new THREE.Vector3();
-        const secondSegment = board?.snake?.[1] ? this.boardToScene(board.snake[1]) : null;
-        const direction = board?.direction || { x: 0, y: 0, z: -1 };
-        const forward = secondSegment
-            ? new THREE.Vector3().subVectors(head, secondSegment)
-            : new THREE.Vector3(direction.x || 0, direction.y || 0, direction.z || -1);
-        if (forward.lengthSq() === 0) {
-            forward.set(0, 0, -1);
-        }
-        forward.normalize();
-
-        const worldUp = new THREE.Vector3(0, 1, 0);
-        const altUp = new THREE.Vector3(0, 0, 1);
-        const referenceUp = Math.abs(forward.dot(worldUp)) > 0.9 ? altUp : worldUp;
-        let side = new THREE.Vector3().crossVectors(forward, referenceUp);
-        if (side.lengthSq() < 0.001) {
-            side = new THREE.Vector3(1, 0, 0);
-        }
-        side.normalize();
-        const cameraUp = new THREE.Vector3().crossVectors(side, forward).normalize();
-        const focusPoint = new THREE.Vector3().copy(head).addScaledVector(forward, Math.max(2.8, this.gridSize * 0.12));
-        if (this.cameraMode === "orbit") {
-            this.angle += 0.00085;
-            this.cameraTargetPosition.set(
-                Math.cos(this.angle) * (this.gridSize * 1.34),
-                this.gridSize * 0.98,
-                Math.sin(this.angle) * (this.gridSize * 1.34)
-            );
-            this.cameraTargetLookAt.copy(this.center);
-            this.cameraUpTarget.set(0, 1, 0);
-            this.cameraFovTarget = 54;
-        } else if (this.cameraMode === "chase") {
-            this.angle += 0.00045;
-            this.cameraTargetPosition.copy(focusPoint)
-                .addScaledVector(forward, -15.2)
-                .addScaledVector(cameraUp, 3.9)
-                .addScaledVector(side, 0.35);
-            this.cameraTargetLookAt.copy(focusPoint)
-                .addScaledVector(forward, 4.9)
-                .addScaledVector(cameraUp, 0.36);
-            this.cameraUpTarget.copy(cameraUp);
-            this.cameraFovTarget = 66;
-        } else if (this.cameraMode === "cine-chase") {
-            this.angle += 0.00025;
-            const drift = Math.sin(this.angle * 2.6) * 0.9;
-            this.cameraTargetPosition.copy(focusPoint)
-                .addScaledVector(forward, -20.5)
-                .addScaledVector(cameraUp, 6.2)
-                .addScaledVector(side, 4.2 + drift);
-            this.cameraTargetLookAt.copy(focusPoint)
-                .addScaledVector(forward, 6.2)
-                .addScaledVector(cameraUp, 0.75)
-                .addScaledVector(side, drift * 0.18);
-            this.cameraUpTarget.copy(cameraUp);
-            this.cameraFovTarget = 48;
-        } else if (this.cameraMode === "static") {
-            this.cameraTargetPosition.set(
-                this.gridSize * 0.08,
-                this.gridSize * 1.02,
-                this.gridSize * 1.6
-            );
-            this.cameraTargetLookAt.copy(this.center);
-            this.cameraUpTarget.set(0, 1, 0);
-            this.cameraFovTarget = 52;
-        } else if (this.cameraMode === "cinema") {
-            this.cinemaBlend += 0.0012;
-            const anchorA = new THREE.Vector3(
-                -this.gridSize * 1.08,
-                this.gridSize * 0.94,
-                this.gridSize * 1.18
-            );
-            const anchorB = new THREE.Vector3(
-                this.gridSize * 1.14,
-                this.gridSize * 0.82,
-                -this.gridSize * 1.06
-            );
-            const blend = (Math.sin(this.cinemaBlend) + 1) / 2;
-            this.cameraTargetPosition.copy(anchorA).lerp(anchorB, blend);
-            this.cameraTargetLookAt.copy(this.center).lerp(focusPoint, 0.16);
-            this.cameraUpTarget.set(0, 1, 0);
-            this.cameraFovTarget = 50;
-        } else {
-            this.cameraMode = "orbit";
-            this.angle += 0.00085;
-            this.cameraTargetPosition.set(
-                Math.cos(this.angle) * (this.gridSize * 1.34),
-                this.gridSize * 0.98,
-                Math.sin(this.angle) * (this.gridSize * 1.34)
-            );
-            this.cameraTargetLookAt.copy(this.center);
-            this.cameraUpTarget.set(0, 1, 0);
-            this.cameraFovTarget = 54;
-        }
-
-        const smoothing = this.cameraMode === "cine-chase"
-            ? 0.045
-            : this.cameraMode === "cinema"
-                ? 0.055
-                : this.cameraMode === "static"
-                    ? 0.07
-                    : 0.11;
-        this.camera.position.lerp(this.cameraTargetPosition, smoothing);
-        this.cameraLookAt.lerp(this.cameraTargetLookAt, Math.min(0.1, smoothing));
-        this.camera.up.lerp(this.cameraUpTarget, Math.min(0.12, smoothing + 0.02)).normalize();
-        if (Math.abs(this.camera.fov - this.cameraFovTarget) > 0.08) {
-            this.camera.fov += (this.cameraFovTarget - this.camera.fov) * 0.08;
-            this.camera.updateProjectionMatrix();
-        }
-        this.camera.lookAt(this.cameraLookAt);
-    }
-
-    setCameraMode(mode) {
-        if (["orbit", "chase", "cine-chase", "static", "cinema"].includes(mode)) {
-            this.cameraMode = mode;
-            return;
-        }
-        this.cameraMode = "orbit";
-    }
-
-    animateFood(time) {
-        if (!this.foodMesh) {
-            return;
-        }
-        const baseY = this.lastBoard?.food ? this.boardToWorld(this.lastBoard.food).y : 0.55;
-        this.foodMesh.position.y = baseY + Math.sin(time / 260) * 0.08;
-        const pulse = 1 + Math.sin(time / 180) * 0.12;
-        this.foodMesh.scale.setScalar(pulse);
-        this.foodMesh.material.emissiveIntensity = 2.2 + (Math.sin(time / 140) + 1) * 0.55;
-    }
-
-    animateDeathPulse() {
-        if (this.deathPulse <= 0) {
-            return;
-        }
-        this.deathPulse = Math.max(0, this.deathPulse - 0.045);
-        const intensity = 0.28 + this.deathPulse * 0.95;
-        this.obstacleMeshes.forEach((mesh) => {
-            mesh.material.emissiveIntensity = intensity * 0.55;
-        });
-        this.segmentMeshes.forEach((group, index) => {
-            const body = group.userData.body;
-            body.material.emissiveIntensity = index === 0 ? 1.2 + this.deathPulse : 1.4 + this.deathPulse * 0.65;
-        });
-    }
-
-    start() {
-        this.handleResize();
-        window.addEventListener("resize", this.handleResize);
-        requestAnimationFrame(this.animate);
-    }
-
-    animate(time) {
-        requestAnimationFrame(this.animate);
-        this.handleResize();
-        this.updateCamera();
-        this.animateFood(time);
-        this.animateDeathPulse();
-        this.renderer.render(this.scene, this.camera);
-    }
-}
-
-const game3D = new Snake3DRenderer({ canvasElement: canvas });
-
-function setCameraMenuOpen(isOpen) {
-    cameraControl.classList.toggle("is-open", isOpen);
-    cameraMenuToggle.setAttribute("aria-expanded", String(isOpen));
-    cameraMenu.setAttribute("aria-hidden", String(!isOpen));
-}
-
-function setCameraView(mode) {
-    game3D.setCameraMode(mode);
-    cameraOptions.forEach((option) => {
-        option.classList.toggle("is-active", option.dataset.cameraView === mode);
-    });
-    setCameraMenuOpen(false);
-}
-
-function updateUI(state) {
-    const previousState = lastState;
+function updateUI(state, { observe = false, snap = false } = {}) {
+    const previous = lastState;
     lastState = state;
-    document.getElementById("episodes").innerText = state.episode;
-    document.getElementById("highScore").innerText = state.highScore;
-    document.getElementById("epsilon").innerText = Number(state.epsilon).toFixed(3);
-    document.getElementById("currentScore").innerText = state.currentScore;
-    document.getElementById("avgScore").innerText = Number(state.avgScore).toFixed(2);
-    document.getElementById("bufferSize").innerText = state.bufferSize;
-    drawNetwork(state.network);
-    game3D.applyBoard(state.board);
-
-    if (previousState) {
-        if (Number(state.currentScore) > Number(previousState.currentScore)) {
-            flashGreen(gamePanel);
-            flashGreen(currentScoreCard);
-        }
-
-        if (Number(state.avgScore) > Number(previousState.avgScore)) {
-            flashGreen(avgScoreCard);
-        }
-    }
-}
-
-async function requestJson(url, options = {}) {
-    const response = await fetch(url, {
-        headers: { "Content-Type": "application/json" },
-        ...options
+    if (!state.board.done) terminalSummary = null;
+    const started = observe && !cinematic && !state.introActive && presentation.observe(state.board, {
+        sampled: speed === "fast", episode: state.episode, waitForLock: true,
     });
-
-    if (!response.ok) {
-        throw new Error(`Request failed: ${response.status}`);
+    if (!observe && !presentation.active && !state.board.done && !cinematic && !state.introActive) {
+        presentation.history.record(state.board, { sampled: speed === "fast", episode: state.episode });
     }
-
-    return response.json();
+    const values = {
+        episodes: state.episode, highScore: state.highScore, epsilon: Number(state.epsilon).toFixed(3),
+        currentScore: state.currentScore, avgScore: Number(state.avgScore).toFixed(2), bufferSize: state.bufferSize,
+    };
+    for (const [id, value] of Object.entries(values)) document.getElementById(id).textContent = value;
+    if (state.network) {
+        const dimensions = state.network.dimensions.join(" / ");
+        document.getElementById("networkSummary").textContent = dimensions;
+        networkCanvas.setAttribute("aria-label", `${dimensions} policy. Sampled real activations and weights; all 18 action values. Last action: ${state.actionLabel}.`);
+        drawNetwork(state.network);
+    }
+    game3D?.applyBoard(state.board, {
+        paused: state.paused || state.introActive || presentation.active || Boolean(lifecycle.terminal),
+        sampled: speed === "fast", interval: pacer.intervalMs || 250,
+        snap: snap || Boolean(previous && state.episode !== previous.episode),
+        decision: { mode: state.mode, isExploring: state.isExploring,
+            actionLabel: state.actionLabel, lastAction: state.lastAction, epsilon: state.epsilon },
+    });
+    if (previous?.episode === state.episode && state.currentScore > previous.currentScore) {
+        flashGreen(document.getElementById("gamePanel"));
+        flashGreen(document.getElementById("currentScoreCard"));
+    }
+    if (previous && state.avgScore > previous.avgScore) flashGreen(document.getElementById("avgScoreCard"));
+    if (!offline) setStatus(notice || `${state.mode === "eval" ? "Test" : "Train"} | ${state.levelName} | ${state.actionLabel} | ${state.board.contact?.outcome === "blocked" ? "Shield blocked the hit" : state.deathCause || "3D: X / Y / Z"}`);
+    if (started) lockTerminal();
+    syncControls();
 }
 
-async function handleWeightsAction(url) {
-    const state = await requestJson(url, { method: "POST" });
-    updateUI(state);
+async function requestJson(url, body) {
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 120000);
+    requestConcurrency += 1;
+    maxRequestConcurrency = Math.max(maxRequestConcurrency, requestConcurrency);
+    try {
+        const response = await fetch(url, {
+            cache: "no-store",
+            ...(body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+            signal: abort.signal,
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(`${url}: ${typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail)} (${response.status})`);
+        if (payload.modelVersion !== MODEL_VERSION || payload.environmentVersion !== ENVIRONMENT_VERSION) {
+            throw new Error("The Python server is running an older game version. Restart the server, then reload this page");
+        }
+        return payload;
+    } finally {
+        clearTimeout(timeout);
+        requestConcurrency -= 1;
+    }
+}
+
+function cancelIntroPresentation() {
+    introGeneration += 1;
+    cinematic = null;
+    game3D?.cancelIntro();
+    document.getElementById("introOverlay").hidden = true;
+}
+
+function cancelPresentations(reason, clearHistory = false) {
+    cancelIntroPresentation();
+    presentation.cancel(reason, { clearHistory });
+    game3D?.clearPresentation();
+    terminalSummary = null;
+    terminalOverlay.hidden = true;
+}
+
+async function api(context, url, body) {
+    if (!context.current()) throw new SupersededOperation();
+    let state;
+    try { state = await requestJson(url, body); }
+    catch (error) { if (!context.current()) throw new SupersededOperation(); throw error; }
+    if (!context.current()) throw new SupersededOperation();
     return state;
 }
 
-function flashButtonLabel(button, label) {
-    const defaultLabel = button.dataset.defaultLabel || button.textContent;
-    button.dataset.defaultLabel = defaultLabel;
-    button.textContent = label;
-    button.disabled = true;
-    setTimeout(() => {
-        button.textContent = defaultLabel;
-        button.disabled = false;
-    }, 900);
+function operation(work, { cancel = false, clearHistory = false, invalidate = true } = {}) {
+    pacer.suspend();
+    const epoch = invalidate ? lifecycle.invalidate() : lifecycle.generation;
+    if (cancel) cancelPresentations("control", clearHistory);
+    pendingControls += 1;
+    notice = "";
+    syncControls();
+    return lifecycle.enqueue(work, epoch).catch(showError).finally(() => {
+        pendingControls -= 1;
+        syncControls();
+    });
 }
 
-let loopActive = true;
+function playbackPreference() {
+    return !lifecycle.desiredPaused;
+}
+
+function lockTerminal() {
+    pacer.suspend();
+    const token = lifecycle.lock(presentation.id);
+    setCameraMenuOpen(false);
+    void lifecycle.enqueue(async (context) => {
+        if (!lifecycle.matches(token)) return;
+        const state = await api(context, "/api/control", { intro: false, paused: true });
+        if (!lifecycle.matches(token)) return;
+        updateUI(state, { observe: false });
+        presentation.unlock(token.id);
+        syncControls();
+    }, token.generation).catch(showError);
+}
+
+async function restorePreference(context, intro = false) {
+    let state = await api(context, "/api/control", { intro, paused: lifecycle.desiredPaused });
+    while (state.paused !== lifecycle.desiredPaused) {
+        state = await api(context, "/api/control", { intro, paused: lifecycle.desiredPaused });
+    }
+    return state;
+}
+
+function finishTerminal(result) {
+    const token = lifecycle.terminal;
+    if (!token || token.id !== result.id || !lifecycle.matches(token)) return Promise.resolve();
+    terminalSummary = { title: result.title, detail: result.detail };
+    return lifecycle.enqueue(async (context) => {
+        if (!lifecycle.matches(token)) return;
+        const state = await restorePreference(context);
+        if (!lifecycle.matches(token)) return;
+        lifecycle.release(token);
+        updateUI(state, { observe: false });
+        renderPresentation(null);
+    }, token.generation).catch(showError);
+}
+
+async function beginCinematic(context) {
+    const id = ++introGeneration;
+    updateUI(await api(context, "/api/control", { intro: true, paused: true }), { observe: false, snap: true });
+    if (id !== introGeneration) return;
+    setCameraMenuOpen(false);
+    cinematic = { id, generation: context.generation, completing: false };
+    game3D.playIntro(() => { void finishCinematic(id); });
+    document.getElementById("introOverlay").hidden = false;
+    document.getElementById("introTitle").textContent = "Your snake";
+    syncControls();
+}
+
+function finishCinematic(id = cinematic?.id) {
+    if (!cinematic || cinematic.id !== id || cinematic.completing) return Promise.resolve();
+    cinematic.completing = true;
+    game3D.cancelIntro();
+    document.getElementById("introOverlay").hidden = true;
+    return lifecycle.enqueue(async (context) => {
+        if (!cinematic || cinematic.id !== id || introGeneration !== id) return;
+        const state = await restorePreference(context);
+        if (cinematic?.id === id) cinematic = null;
+        updateUI(state, { observe: false });
+    }, cinematic.generation).catch(showError);
+}
+
+function renderPresentation(frame, context = {}) {
+    const showSummary = !frame && terminalSummary && lastState?.board.done && lifecycle.desiredPaused && !cinematic;
+    terminalOverlay.hidden = !(frame || showSummary);
+    const panel = document.getElementById("gamePanel");
+    panel.classList.toggle("has-presentation", !terminalOverlay.hidden);
+    panel.classList.toggle("is-replay", Boolean(frame?.replay));
+    panel.classList.toggle("is-eliminated", Boolean(frame?.eliminated || showSummary));
+    if (frame) {
+        terminalOverlay.dataset.phase = frame.phase;
+        document.getElementById("terminalPhase").textContent = frame.label;
+        document.getElementById("terminalTitle").textContent = frame.title;
+        document.getElementById("terminalDetail").textContent = frame.phase === "rewind"
+            ? "Replaying the recorded approach. This round has already ended."
+            : frame.phase === "aftermath" ? `${frame.detail} Your snake is eliminated.` : frame.detail;
+        document.getElementById("contactStatus").textContent = frame.phase === "locking" ? "Stopping playback before the contact view…" : frame.replay
+            ? `Recorded step ${frame.board.steps} · round ended at ${lastState.board.steps} · simulation paused` : frame.contact
+            ? `Step ${frame.contact.step} · ${frame.contact.kind.replaceAll("-", " ")} · simulation paused`
+            : "No physical contact · simulation paused";
+        document.getElementById("skipRecapBtn").textContent = "Skip recap";
+    } else if (showSummary) {
+        terminalOverlay.dataset.phase = "summary";
+        document.getElementById("terminalPhase").textContent = "ROUND ENDED · PAUSED";
+        document.getElementById("terminalTitle").textContent = terminalSummary.title;
+        document.getElementById("terminalDetail").textContent = terminalSummary.detail;
+        document.getElementById("contactStatus").textContent = "Paused by your preference. Resume starts the next round.";
+        document.getElementById("skipRecapBtn").textContent = "Resume next round";
+    }
+    const cutaway = document.getElementById("cutawayNotice");
+    if (cutaway) cutaway.hidden = !context.cutaway || Boolean(cinematic);
+    const viewStatus = document.getElementById("viewStatus");
+    const mode = game3D?.cameraMode || "game";
+    const phase = frame?.phase === "rewind" ? "REWIND" : frame?.eliminated ? "ELIMINATED" : frame?.replay ? "RECAP"
+        : frame && !frame.contact ? "ROUND ENDED" : frame ? "CONTACT" : context.shieldBlocked ? "SHIELD BLOCK" : null;
+    const height = lastState?.board.snake[0]?.y;
+    viewStatus.textContent = phase ? `${frame ? "EVENT" : mode === "game" ? "GAME" : mode.toUpperCase()} VIEW · ${phase}`
+        : speed === "fast" ? "FAST TRAINING · SAMPLED" : `${mode === "game" ? "GAME" : mode.toUpperCase()} VIEW${height == null ? "" : ` · Y ${height + 1}/${lastState.board.gridSize}`}`;
+    viewStatus.hidden = Boolean(cinematic);
+    if (cinematic) document.getElementById("introTitle").textContent = context.director?.title || "The opening";
+}
+
+function setCameraMenuOpen(open) {
+    cameraControl.classList.toggle("is-open", open);
+    cameraMenuToggle.setAttribute("aria-expanded", String(open));
+    cameraMenu.setAttribute("aria-hidden", String(!open));
+    cameraMenu.inert = !open;
+}
+
+function setSpeedValue(value) {
+    speed = value;
+    if (value !== "slow" && value !== "fast") previousRegularSpeed = value;
+    pacer.suspend();
+    pacer.setMode(value, performance.now());
+    document.getElementById("speedSelect").value = value;
+    slowModeToggle.setAttribute("aria-pressed", String(value === "slow"));
+    slowModeToggle.textContent = "2 steps / second";
+    slowModeToggle.title = value === "slow"
+        ? `Restore ${SIMULATION_RATES[previousRegularSpeed]} training steps / second`
+        : "Set actual simulation and learning to 2 steps / second";
+}
+
+function setSpeed(value) {
+    if (!Object.hasOwn(SIMULATION_RATES, value) || value === speed) return;
+    const wasFast = speed === "fast";
+    setSpeedValue(value);
+    if (wasFast || value === "fast") {
+        void operation(async (context) => {
+            updateUI(await restorePreference(context), { observe: false, snap: true });
+        }, { cancel: true, clearHistory: true });
+    } else {
+        if (lastState && !cinematic && !presentation.active && !lifecycle.terminal && !lastState.introActive) {
+            game3D?.applyBoard(lastState.board, { paused: lastState.paused, sampled: false, interval: pacer.intervalMs });
+        }
+        syncControls();
+    }
+}
+
+function setArenaExpanded(expanded) {
+    arenaExpanded = expanded;
+    document.body.classList.toggle("arena-expanded", expanded);
+    const button = document.getElementById("expandArenaBtn");
+    const label = expanded ? "Restore dashboard" : "Expand arena";
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(expanded));
+    button.title = label;
+}
+
+function steppingBlocked() {
+    return !active || !lastState || pendingControls || offline || cinematic || presentation.active || lifecycle.terminal
+        || lastState.introActive || lastState.paused || lifecycle.desiredPaused || document.hidden;
+}
 
 async function loop() {
-    while (loopActive) {
-        try {
-            const state = await requestJson("/api/tick", { method: "POST" });
-            updateUI(state);
-            await delay((state.delayMs || 36) * tickDelayMultiplier);
-        } catch (error) {
-            console.error(error);
-            await delay(1200);
+    while (active) {
+        if (steppingBlocked()) {
+            pacer.suspend();
+            await delay(40);
+            continue;
         }
+        pacer.resume(performance.now());
+        const wait = pacer.waitMs(performance.now());
+        if (wait > 0) {
+            await delay(Math.min(wait, 40));
+            continue;
+        }
+        const token = lifecycle.generation;
+        try {
+            await lifecycle.enqueue(async (context) => {
+                if (steppingBlocked()) { pacer.suspend(); return; }
+                if (!pacer.tryStart(performance.now())) return;
+                try {
+                    updateUI(await api(context, speed === "fast" && lastState.mode === "train" ? "/api/train" : "/api/tick",
+                        { steps: speed === "fast" ? 128 : 1 }), { observe: true });
+                } finally { pacer.complete(performance.now()); }
+            }, token);
+        } catch (error) {
+            showError(error);
+        }
+        await delay(0);
     }
 }
 
-document.getElementById("resetBtn").addEventListener("click", async () => {
-    if (!window.confirm("This will erase all training progress. Continue?")) {
+document.getElementById("saveWeightsBtn").addEventListener("click", () => operation(async (context) => {
+    const state = await api(context, "/api/save-weights", {});
+    notice = state.logMessage;
+    updateUI(state);
+}, { invalidate: false }));
+document.getElementById("loadWeightsBtn").addEventListener("click", () => {
+    void operation(async (context) => {
+        await api(context, "/api/control", { intro: false, paused: true });
+        const state = await api(context, "/api/load-weights", {});
+        notice = state.logMessage;
+        updateUI(await restorePreference(context), { snap: true });
+    }, { cancel: true, clearHistory: true });
+});
+document.getElementById("readyWeightsBtn").addEventListener("click", () => {
+    lifecycle.desiredPaused = false;
+    void operation(async (context) => {
+        await api(context, "/api/control", { intro: false, paused: true });
+        const state = await api(context, "/api/load-ready-weights", {});
+        notice = state.logMessage;
+        updateUI(state, { snap: true });
+        if (introEnabled) await beginCinematic(context);
+    }, { cancel: true, clearHistory: true });
+});
+document.getElementById("resetBtn").addEventListener("click", () => {
+    if (!window.confirm("Reset training? Current-format checkpoints will be archived. Older checkpoints and ready weights will be kept.")) return;
+    lifecycle.desiredPaused = false;
+    void operation(async (context) => {
+        await api(context, "/api/control", { intro: false, paused: true });
+        const state = await api(context, "/api/reset", {});
+        notice = state.logMessage;
+        updateUI(state, { snap: true });
+    }, { cancel: true, clearHistory: true });
+});
+document.getElementById("pauseBtn").addEventListener("click", () => {
+    lifecycle.desiredPaused = !lifecycle.desiredPaused;
+    if (cinematic || presentation.active || lifecycle.terminal) {
+        syncControls();
         return;
     }
-
-    const state = await requestJson("/api/reset", { method: "POST" });
-    updateUI(state);
+    void operation(async (context) => updateUI(await restorePreference(context), { observe: false }));
 });
-
-document.getElementById("saveWeightsBtn").addEventListener("click", async () => {
-    const button = document.getElementById("saveWeightsBtn");
-    await handleWeightsAction("/api/save-weights");
-    flashButtonLabel(button, "Saved");
+document.getElementById("newRunBtn").addEventListener("click", () => {
+    void operation(async (context) => {
+        updateUI(await api(context, "/api/control", { intro: false, newEpisode: true, paused: true }), { snap: true });
+        if (introEnabled && speed !== "fast") await beginCinematic(context);
+        else updateUI(await restorePreference(context));
+    }, { cancel: true, clearHistory: true });
 });
-
-document.getElementById("loadWeightsBtn").addEventListener("click", async () => {
-    const button = document.getElementById("loadWeightsBtn");
-    const state = await handleWeightsAction("/api/load-weights");
-    flashButtonLabel(button, state.logMessage.startsWith("Loaded") ? "Loaded" : "No Save");
+document.getElementById("replayIntroBtn").addEventListener("click", () => {
+    void operation((context) => beginCinematic(context), { cancel: true });
 });
-
-cameraMenuToggle.addEventListener("click", () => {
-    setCameraMenuOpen(!cameraControl.classList.contains("is-open"));
+document.getElementById("skipIntroBtn").addEventListener("click", () => { void finishCinematic(); });
+document.getElementById("skipRecapBtn").addEventListener("click", () => {
+    if (presentation.active) presentation.finish("skip");
+    else if (terminalSummary && lifecycle.desiredPaused) {
+        lifecycle.desiredPaused = false;
+        void operation(async (context) => updateUI(await restorePreference(context), { observe: false }));
+    }
 });
-
-cameraOptions.forEach((option) => {
-    option.addEventListener("click", () => {
-        setCameraView(option.dataset.cameraView);
-    });
+document.getElementById("introToggle").addEventListener("change", (event) => {
+    introEnabled = event.target.checked;
+    if (!introEnabled && cinematic) void finishCinematic();
 });
-
-slowModeToggle.addEventListener("click", () => {
-    slowModeEnabled = !slowModeEnabled;
-    tickDelayMultiplier = slowModeEnabled ? 6 : 1;
-    slowModeToggle.classList.toggle("is-active", slowModeEnabled);
-    slowModeToggle.setAttribute("aria-pressed", String(slowModeEnabled));
-    slowModeToggle.textContent = slowModeEnabled ? "Slow x6" : "Slow";
+document.getElementById("difficultySelect").addEventListener("change", (event) => {
+    const value = event.target.value;
+    void operation(async (context) => {
+        updateUI(await api(context, "/api/control", {
+            level: value === "full" ? 6 : value === "curriculum" ? 1 : Number(value),
+            autoCurriculum: value === "curriculum", fullSurvival: value === "full",
+            intro: false, paused: !playbackPreference(),
+        }), { snap: true });
+    }, { cancel: true, clearHistory: true });
 });
-
-document.addEventListener("click", (event) => {
-    if (!cameraMenu.contains(event.target) && !cameraMenuToggle.contains(event.target)) {
+document.getElementById("modeSelect").addEventListener("change", (event) => {
+    const mode = event.target.value;
+    void operation(async (context) => updateUI(await api(context, "/api/control", {
+        intro: false, mode, paused: !playbackPreference(),
+    })), { cancel: true, clearHistory: true });
+});
+document.getElementById("speedSelect").addEventListener("change", (event) => {
+    setSpeed(event.target.value);
+});
+slowModeToggle.addEventListener("click", () => setSpeed(speed === "slow" ? previousRegularSpeed : "slow"));
+cameraMenuToggle.addEventListener("click", () => setCameraMenuOpen(!cameraControl.classList.contains("is-open")));
+document.getElementById("expandArenaBtn").addEventListener("click", () => setArenaExpanded(!arenaExpanded));
+cameraOptions.forEach((option) => option.addEventListener("click", () => {
+    try {
+        game3D?.setCameraMode(option.dataset.cameraView);
+        if (cinematic) void finishCinematic();
+        cameraOptions.forEach((button) => {
+            const selected = button === option;
+            button.classList.toggle("is-active", selected);
+            button.setAttribute("aria-pressed", String(selected));
+        });
         setCameraMenuOpen(false);
+    } catch (error) {
+        showError(error);
+    }
+}));
+document.addEventListener("click", (event) => {
+    if (!cameraControl.contains(event.target)) setCameraMenuOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+        if (cinematic) void finishCinematic();
+        else if (!cameraControl.classList.contains("is-open") && arenaExpanded) setArenaExpanded(false);
+        setCameraMenuOpen(false);
+        cameraMenuToggle.focus();
     }
 });
+document.addEventListener("visibilitychange", () => pacer.suspend());
+document.getElementById("retryBtn").addEventListener("click", () => operation(async (context) => {
+    offline = false;
+    lifecycle.desiredPaused = true;
+    notice = "";
+    updateUI(await api(context, "/api/control", { intro: false, paused: true }), { observe: false, snap: true });
+    document.getElementById("retryBtn").hidden = true;
+}, { cancel: true, clearHistory: true }));
 
-window.addEventListener("resize", () => {
-    resizeNetworkCanvas();
-    if (lastState) {
-        drawNetwork(lastState.network);
-    }
+const networkObserver = new ResizeObserver(resizeNetworkCanvas);
+networkObserver.observe(networkCanvas);
+window.__snakeDebug = () => ({
+    state: lastState, renderer: game3D?.debug(), lifecycle: {
+        pendingControls, offline, speed, requestConcurrency, maxRequestConcurrency,
+        simulationStepsPerSecond: pacer.stepsPerSecond, tickIntervalMs: pacer.intervalMs, pacing: pacer.debug(),
+        introActive: Boolean(cinematic), introGeneration, arenaExpanded,
+        presentationActive: presentation.active || Boolean(lifecycle.terminal), presentation: presentation.debug(),
+        desiredPaused: lifecycle.desiredPaused, generation: lifecycle.generation,
+    },
 });
+window.addEventListener("pagehide", () => {
+    active = false;
+    pacer.suspend();
+    lifecycle.invalidate();
+    presentation.cancel("pagehide", { clearHistory: true });
+    game3D?.dispose();
+    networkObserver.disconnect();
+}, { once: true });
 
 async function boot() {
-    game3D.start();
-    resizeNetworkCanvas();
-
     try {
-        const state = await requestJson("/api/state");
-        updateUI(state);
+        game3D = new Snake3DRenderer(document.getElementById("gameCanvas"), {
+            labelLayer: document.getElementById("actorLabels"), presentation, onPresentationFrame: renderPresentation,
+        });
     } catch (error) {
-        console.error(error);
+        showError(new Error(`3D rendering could not start: ${error.message}`));
+        syncControls();
+        return;
     }
-
-    loop();
+    await operation(async (context) => {
+        updateUI(await api(context, "/api/state"), { observe: false, snap: true });
+        updateUI(await api(context, "/api/control", { intro: false, paused: true }), { observe: false });
+        if (introEnabled) await beginCinematic(context);
+        else updateUI(await restorePreference(context));
+    });
+    void loop();
 }
 
-boot().catch((error) => {
-    console.error(error);
-});
+setSpeedValue(speed);
+void boot();

@@ -1,3 +1,4 @@
+# Runtime only; API tests use requirements-dev.txt, browser checks use package.json.
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 numpy==2.3.2

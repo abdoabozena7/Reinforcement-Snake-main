@@ -1,111 +1,18 @@
-<!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Snake Training Room</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Futuristic Tron Snake Battle</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <main class="workspace">
-        <header class="page-head">
-            <div class="title-row">
-                <h1>Training Room</h1>
-                <p class="eyebrow">Reinforcement Snake</p>
-            </div>
-            <div class="action-row">
-                <button id="saveWeightsBtn" class="btn btn-secondary">Save Weights</button>
-                <button id="loadWeightsBtn" class="btn btn-secondary">Load Saved / Best</button>
-                <button id="resetBtn" class="btn reset-floating">Reset Weights &amp; Start Over</button>
-            </div>
-        </header>
-
-        <section class="top-grid">
-            <section id="gamePanel" class="panel game-panel">
-                <div class="panel-body game-body">
-                    <div id="cameraControl" class="camera-control">
-                        <button
-                            id="cameraMenuToggle"
-                            class="camera-toggle"
-                            type="button"
-                            aria-label="Open camera views"
-                            aria-expanded="false"
-                        >
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="M1.5 12s3.8-6.5 10.5-6.5S22.5 12 22.5 12 18.7 18.5 12 18.5 1.5 12 1.5 12Z"/>
-                                <circle cx="12" cy="12" r="3.25"/>
-                            </svg>
-                        </button>
-                        <div id="cameraMenu" class="camera-menu" aria-hidden="true">
-                            <button type="button" class="camera-option is-active" data-camera-view="orbit">Orbit</button>
-                            <button type="button" class="camera-option" data-camera-view="chase">Chase</button>
-                            <button type="button" class="camera-option" data-camera-view="cine-chase">Cine Chase</button>
-                            <button type="button" class="camera-option" data-camera-view="static">Static</button>
-                            <button type="button" class="camera-option" data-camera-view="cinema">Cinema</button>
-                            <div class="camera-menu-divider">Playback</div>
-                            <button
-                                id="slowModeToggle"
-                                class="camera-utility slow-menu-option"
-                                type="button"
-                                aria-pressed="false"
-                            >
-                                Slow
-                            </button>
-                        </div>
-                    </div>
-                    <canvas id="gameCanvas" width="400" height="400"></canvas>
-                </div>
-            </section>
-
-            <section class="panel ann-panel">
-                <div class="panel-body ann-body">
-                    <div class="network-stage">
-                        <canvas id="networkCanvas"></canvas>
-                    </div>
-                    <div class="network-legend">
-                        <span><i class="legend-dot positive"></i>Positive weight</span>
-                        <span><i class="legend-dot negative"></i>Negative weight</span>
-                        <span><i class="legend-dot active"></i>Active neuron</span>
-                    </div>
-                </div>
-            </section>
-        </section>
-
-        <section class="panel dashboard-panel">
-            <div class="panel-body dashboard-body">
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <span class="stat-label">Episode</span>
-                        <span id="episodes" class="stat-val">0</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="stat-label">High Score</span>
-                        <span id="highScore" class="stat-val">0</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Epsilon</span>
-                        <span id="epsilon" class="stat-val">1.00</span>
-                    </div>
-                    <div id="currentScoreCard" class="stat-card">
-                        <span class="stat-label">Current Score</span>
-                        <span id="currentScore" class="stat-val">0</span>
-                    </div>
-                    <div id="avgScoreCard" class="stat-card">
-                        <span class="stat-label">Avg Score</span>
-                        <span id="avgScore" class="stat-val">0</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Replay Buffer</span>
-                        <span id="bufferSize" class="stat-val">0</span>
-                    </div>
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <script type="module" src="/static/app.js"></script>
-</body>
+    <link rel="stylesheet" href="/static/reference-controls.css?v=reference-hud-4">
+    <style>
+      body { margin: 0; overflow: hidden; background: #000; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="gameCanvas"></canvas>
+    <section id="scoreboard" aria-label="Training indicators and neural network"></section>
+    <script type="module" src="/static/reference-view.js?v=reference-hud-4"></script>
+  </body>
 </html>
